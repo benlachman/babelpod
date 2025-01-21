@@ -156,13 +156,9 @@ function buildUnifiedOutputs() {
       });
     }
   }
-}
-updateAllInputs();
-  }
-updateAllInputs();
 
-let combined = local.concat(airplayMerged);
-return combined;
+  let combined = local.concat(airplayMerged);
+  return combined;
 }
 
 // push to front end
@@ -348,24 +344,6 @@ io.on('connection', socket => {
     }
     io.emit('changed_output_volume', volume);
   });
-});
-    }
-if (msg.startsWith("plughw:")) {
-  aplayInstance = spawn("aplay", [
-    '-D', msg,
-    '-c', "2",
-    '-f', "S16_LE",
-    '-r', "44100"
-  ]);
-});
-    }
-if (msg.startsWith("plughw:")) {
-  aplayInstance = spawn("aplay", [
-    '-D', msg,
-    '-c', "2",
-    '-f', "S16_LE",
-    '-r', "44100"
-  ]);
 
   socket.on('switch_output', newOutputs => {
     console.log('switch_output => ', newOutputs);
@@ -399,6 +377,6 @@ if (msg.startsWith("plughw:")) {
   });
 });
 
-http.listen(3000, function () {
-  console.log('listening on *:3000');
+http.listen(3000, () => {
+  console.log("Babelpod listening on :3000");
 });

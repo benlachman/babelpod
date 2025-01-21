@@ -1,229 +1,239 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
-<head>
-  <title>BabelPod (Stereo Pairs + Checkboxes)</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: sans-serif;
-      background: #e7ebf0;
-    }
-    header {
-      background: #005f73;
-      color: #fff;
-      padding: 1rem;
-      text-align: center;
-      font-size: 1.8rem;
-    }
-    .container {
-      max-width: 600px;
-      margin: 0 auto;
-      padding: 1rem;
-    }
-    label {
-      display: block;
-      margin-top: 1rem;
-      font-weight: 600;
-      font-size: 1.1rem;
-      color: #005f73;
-    }
-    #input, #outputs {
-      margin: 0.5rem 0;
-      background: #fff;
-      padding: 0.5rem;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-    }
-    .checkbox-list {
-      background: #fff;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      padding: 0.5rem;
-    }
-    .checkbox-list label {
-      display: flex;
-      align-items: center;
-      margin: 0.3rem 0;
-      font-weight: normal;
-    }
-    .checkbox-list input {
-      margin-right: 0.5rem;
-      transform: scale(1.2);
-    }
-    #outputVolume {
-      width: 100%;
-      margin: 0.5rem 0;
-    }
-    .info-block {
-      margin-top: 1rem;
-      background: #fefae0;
-      padding: 1rem;
-      border-radius: 8px;
-      border: 1px solid #d8c99b;
-    }
-    .info-block p {
-      margin: 0.5rem 0;
-    }
-    .btn-refresh {
-      display: inline-block;
-      margin-top: 1rem;
-      padding: 0.4rem 1rem;
-      font-size: 1rem;
-      border: none;
-      border-radius: 6px;
-      background: #0a9396;
-      color: white;
-      cursor: pointer;
-    }
-    @media (max-width: 600px) {
-      .container {
-        padding: 0.5rem;
+  <head>
+    <title>BabelPod (Stereo Pairs + Checkboxes)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: sans-serif;
+        background: #e7ebf0;
       }
       header {
-        font-size: 1.5rem;
+        background: #005f73;
+        color: #fff;
+        padding: 1rem;
+        text-align: center;
+        font-size: 1.8rem;
       }
-    }
-  </style>
-</head>
-<body>
-  <header>BabelPod (Stereo + Checkboxes)</header>
-  <div class="container">
-    <label for="inputSelect">Input</label>
-    <select id="inputSelect" size="4">
-      <!-- filled by JS -->
-    </select>
-
-    <label for="outputVolume">Volume</label>
-    <input type="range" min="0" max="100" value="50" id="outputVolume">
-
-    <label>Outputs</label>
-    <div class="checkbox-list" id="outputs">
-      <!-- We dynamically create checkboxes for each device -->
-    </div>
-
-    <button class="btn-refresh" id="btnRefresh">Refresh Devices</button>
-
-    <div class="info-block">
-      <p><strong>Active Input:</strong> <span id="activeInputDisplay">void</span></p>
-      <p><strong>Volume:</strong> <span id="activeVolumeDisplay">50</span>%</p>
-      <p><strong>Active Outputs:</strong></p>
-      <ul id="activeOutputsList"></ul>
-    </div>
-  </div>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    var socket = io();
-    var currentInput = "void";
-    var currentOutputs = [];
-    var currentVolume = 50;
-    var inputEl = document.getElementById('inputSelect');
-    var volumeEl = document.getElementById('outputVolume');
-    var outputsContainer = document.getElementById('outputs');
-
-    var activeInputDisplay = document.getElementById('activeInputDisplay');
-    var activeVolumeDisplay = document.getElementById('activeVolumeDisplay');
-    var activeOutputsList = document.getElementById('activeOutputsList');
-
-    // In Socket.IO v4, usage is basically the same.
-    socket.on('available_inputs', function(list){
-      while(inputEl.firstChild) inputEl.removeChild(inputEl.firstChild);
-      list.forEach(item=>{
-        let opt = document.createElement('option');
-        opt.value=item.id;
-        opt.textContent=item.name;
-        inputEl.appendChild(opt);
-      });
-      // restore current input
-      inputEl.value=currentInput;
-    });
-
-    socket.on('available_outputs', function(unified){
-      // “unified” array => each item has {uiId, name, isStereo, devices:[...]}
-      while(outputsContainer.firstChild) outputsContainer.removeChild(outputsContainer.firstChild);
-
-      unified.forEach(item=>{
-        let lb = document.createElement('label');
-        let cb = document.createElement('input');
-        cb.type='checkbox';
-        cb.value=item.uiId;
-        // check if already selected
-        cb.checked = currentOutputs.includes(item.uiId);
-        cb.addEventListener('change', handleOutputCheckboxChange);
-        lb.appendChild(cb);
-        lb.appendChild(document.createTextNode(' '+item.name));
-        outputsContainer.appendChild(lb);
-      });
-      refreshActiveOutputsList();
-    });
-
-    socket.on('switched_input', function(newInput){
-      currentInput=newInput;
-      inputEl.value=newInput;
-      activeInputDisplay.textContent=newInput;
-    });
-    socket.on('switched_output', function(newOuts){
-      if(!Array.isArray(newOuts)) newOuts=[newOuts];
-      currentOutputs=newOuts;
-      // update checkboxes
-      let cbs = outputsContainer.querySelectorAll('input[type=checkbox]');
-      cbs.forEach(cb=>{
-        cb.checked = newOuts.includes(cb.value);
-      });
-      refreshActiveOutputsList();
-    });
-    socket.on('changed_output_volume', function(vol){
-      currentVolume=vol;
-      volumeEl.value=vol;
-      activeVolumeDisplay.textContent=vol;
-    });
-
-    function handleOutputCheckboxChange(ev){
-      let cbs = outputsContainer.querySelectorAll('input[type=checkbox]');
-      let newSelected = [];
-      cbs.forEach(cb=>{
-        if(cb.checked){
-          newSelected.push(cb.value);
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+        font-weight: 600;
+        font-size: 1.1rem;
+        color: #005f73;
+      }
+      #input,
+      #outputs {
+        margin: 0.5rem 0;
+        background: #fff;
+        padding: 0.5rem;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+      }
+      .checkbox-list {
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        padding: 0.5rem;
+      }
+      .checkbox-list label {
+        display: flex;
+        align-items: center;
+        margin: 0.3rem 0;
+        font-weight: normal;
+      }
+      .checkbox-list input {
+        margin-right: 0.5rem;
+        transform: scale(1.2);
+      }
+      #outputVolume {
+        width: 100%;
+        margin: 0.5rem 0;
+      }
+      .info-block {
+        margin-top: 1rem;
+        background: #fefae0;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #d8c99b;
+      }
+      .info-block p {
+        margin: 0.5rem 0;
+      }
+      .btn-refresh {
+        display: inline-block;
+        margin-top: 1rem;
+        padding: 0.4rem 1rem;
+        font-size: 1rem;
+        border: none;
+        border-radius: 6px;
+        background: #0a9396;
+        color: white;
+        cursor: pointer;
+      }
+      @media (max-width: 600px) {
+        .container {
+          padding: 0.5rem;
         }
+        header {
+          font-size: 1.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>BabelPod</header>
+    <div class="container">
+      <label for="inputSelect">Input</label>
+      <select id="inputSelect" size="4">
+        <!-- filled by JS -->
+      </select>
+
+      <label for="outputVolume">Volume</label>
+      <input type="range" min="0" max="100" value="50" id="outputVolume" />
+
+      <label>Outputs</label>
+      <div class="checkbox-list" id="outputs">
+        <!-- We dynamically create checkboxes for each device -->
+      </div>
+
+      <button class="btn-refresh" id="btnRefresh">Refresh Devices</button>
+
+      <div class="info-block">
+        <p>
+          <strong>Active Input:</strong>
+          <span id="activeInputDisplay">void</span>
+        </p>
+        <p>
+          <strong>Volume:</strong> <span id="activeVolumeDisplay">50</span>%
+        </p>
+        <p><strong>Active Outputs:</strong></p>
+        <ul id="activeOutputsList"></ul>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      var socket = io();
+      var currentInput = "void";
+      var currentOutputs = [];
+      var currentVolume = 50;
+      var inputEl = document.getElementById("inputSelect");
+      var volumeEl = document.getElementById("outputVolume");
+      var outputsContainer = document.getElementById("outputs");
+
+      var activeInputDisplay = document.getElementById("activeInputDisplay");
+      var activeVolumeDisplay = document.getElementById("activeVolumeDisplay");
+      var activeOutputsList = document.getElementById("activeOutputsList");
+
+      // In Socket.IO v4, usage is basically the same.
+      socket.on("available_inputs", function (list) {
+        while (inputEl.firstChild) inputEl.removeChild(inputEl.firstChild);
+        list.forEach((item) => {
+          let opt = document.createElement("option");
+          opt.value = item.id;
+          opt.textContent = item.name;
+          inputEl.appendChild(opt);
+        });
+        // restore current input
+        inputEl.value = currentInput;
       });
-      socket.emit('switch_output', newSelected);
-    }
 
-    function refreshActiveOutputsList(){
-      while(activeOutputsList.firstChild) activeOutputsList.removeChild(activeOutputsList.firstChild);
-      currentOutputs.forEach(o=>{
-        let li = document.createElement('li');
-        li.textContent=o;
-        activeOutputsList.appendChild(li);
+      socket.on("available_outputs", function (unified) {
+        // “unified” array => each item has {uiId, name, isStereo, devices:[...]}
+        while (outputsContainer.firstChild)
+          outputsContainer.removeChild(outputsContainer.firstChild);
+
+        unified.forEach((item) => {
+          let lb = document.createElement("label");
+          let cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.value = item.uiId;
+          // check if already selected
+          cb.checked = currentOutputs.includes(item.uiId);
+          cb.addEventListener("change", handleOutputCheckboxChange);
+          lb.appendChild(cb);
+          lb.appendChild(document.createTextNode(" " + item.name));
+          outputsContainer.appendChild(lb);
+        });
+        refreshActiveOutputsList();
       });
-    }
 
-    inputEl.addEventListener('change', function(ev){
-      socket.emit('switch_input', ev.target.value);
-    });
-    volumeEl.addEventListener('input', function(ev){
-      socket.emit('change_output_volume', ev.target.value);
-    });
+      socket.on("switched_input", function (newInput) {
+        currentInput = newInput;
+        inputEl.value = newInput;
+        activeInputDisplay.textContent = newInput;
+      });
+      socket.on("switched_output", function (newOuts) {
+        if (!Array.isArray(newOuts)) newOuts = [newOuts];
+        currentOutputs = newOuts;
+        // update checkboxes
+        let cbs = outputsContainer.querySelectorAll("input[type=checkbox]");
+        cbs.forEach((cb) => {
+          cb.checked = newOuts.includes(cb.value);
+        });
+        refreshActiveOutputsList();
+      });
+      socket.on("changed_output_volume", function (vol) {
+        currentVolume = vol;
+        volumeEl.value = vol;
+        activeVolumeDisplay.textContent = vol;
+      });
 
-    // optional refresh
-    document.getElementById('btnRefresh').addEventListener('click', function(){
-      // we can re-emit or do nothing if code is in node side
-      // or just do a ping so node re-check?
-      // we can do: location.reload() or a custom socket emit
-      // location.reload();  // simplistic approach
-      socket.emit('switch_output', currentOutputs);
-      socket.emit('switch_input', currentInput);
-    });
+      function handleOutputCheckboxChange(ev) {
+        let cbs = outputsContainer.querySelectorAll("input[type=checkbox]");
+        let newSelected = [];
+        cbs.forEach((cb) => {
+          if (cb.checked) {
+            newSelected.push(cb.value);
+          }
+        });
+        socket.emit("switch_output", newSelected);
+      }
 
-    // init
-    activeInputDisplay.textContent=currentInput;
-    activeVolumeDisplay.textContent=currentVolume;
-    refreshActiveOutputsList();
-  </script>
-</body>
+      function refreshActiveOutputsList() {
+        while (activeOutputsList.firstChild)
+          activeOutputsList.removeChild(activeOutputsList.firstChild);
+        currentOutputs.forEach((o) => {
+          let li = document.createElement("li");
+          li.textContent = o;
+          activeOutputsList.appendChild(li);
+        });
+      }
+
+      inputEl.addEventListener("change", function (ev) {
+        socket.emit("switch_input", ev.target.value);
+      });
+      volumeEl.addEventListener("input", function (ev) {
+        socket.emit("change_output_volume", ev.target.value);
+      });
+
+      // optional refresh
+      document
+        .getElementById("btnRefresh")
+        .addEventListener("click", function () {
+          // we can re-emit or do nothing if code is in node side
+          // or just do a ping so node re-check?
+          // we can do: location.reload() or a custom socket emit
+          // location.reload();  // simplistic approach
+          socket.emit("switch_output", currentOutputs);
+          socket.emit("switch_input", currentInput);
+        });
+
+      // init
+      activeInputDisplay.textContent = currentInput;
+      activeVolumeDisplay.textContent = currentVolume;
+      refreshActiveOutputsList();
+    </script>
+  </body>
 </html>
