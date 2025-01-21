@@ -1,147 +1,229 @@
 <!doctype html>
 <html>
-  <head>
-    <title>BabelPod</title>
-    <meta name="viewport" content="width=device-width; initial-scale=1.5" />
-    <style>
-      body {
-        font-family: Helvetica;
-        font-size: 14px;
-        margin: 0px;
+<head>
+  <title>BabelPod (Stereo Pairs + Checkboxes)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: sans-serif;
+      background: #e7ebf0;
+    }
+    header {
+      background: #005f73;
+      color: #fff;
+      padding: 1rem;
+      text-align: center;
+      font-size: 1.8rem;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+    label {
+      display: block;
+      margin-top: 1rem;
+      font-weight: 600;
+      font-size: 1.1rem;
+      color: #005f73;
+    }
+    #input, #outputs {
+      margin: 0.5rem 0;
+      background: #fff;
+      padding: 0.5rem;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    .checkbox-list {
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 0.5rem;
+    }
+    .checkbox-list label {
+      display: flex;
+      align-items: center;
+      margin: 0.3rem 0;
+      font-weight: normal;
+    }
+    .checkbox-list input {
+      margin-right: 0.5rem;
+      transform: scale(1.2);
+    }
+    #outputVolume {
+      width: 100%;
+      margin: 0.5rem 0;
+    }
+    .info-block {
+      margin-top: 1rem;
+      background: #fefae0;
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid #d8c99b;
+    }
+    .info-block p {
+      margin: 0.5rem 0;
+    }
+    .btn-refresh {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.4rem 1rem;
+      font-size: 1rem;
+      border: none;
+      border-radius: 6px;
+      background: #0a9396;
+      color: white;
+      cursor: pointer;
+    }
+    @media (max-width: 600px) {
+      .container {
+        padding: 0.5rem;
       }
-      h1 {
-        font-size: 1.8em;
-        background-color: grey;
-        color: white;
-        padding: 4px;
-        margin: 0px 0px 10px 0px;
-        width: 100%;
+      header {
+        font-size: 1.5rem;
       }
-      label {
-        font-size: 1.3em;
-        font-weight: bold;
-        margin: 4px;
-      }
-      select {
-        display: block;
-        width: 98%;
-        max-width: 496px;
-        font-family: inherit;
-        font-size: 1em;
-        margin-bottom: 10px;
-        margin-left: 4px;
-      }
-      input.slider {
-        max-width: 425px;
-        width: 100%;
-      }
-      .flexbox {
-        display: flex;
-        align-items: center;
-        width: 98%;
-        max-width: 500px;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>BabelPod</h1>
-      <label>Input</label>
-      <select id="input" size="4">
-        <option value="void">None</option>
-      </select>
-      <label>Output</label>
-      <select id="output" size="4">
-        <option value="void">None</option>
-      </select>
-      <div class="flexbox">
-        <label>Volume</label>
-        <input type="range" min="1" max="100" value="50" class="slider" id="outputVolume" list="ticks">
-        <datalist id="ticks">
-          <option value="0" label="0%">
-          <option value="10">
-          <option value="20">
-          <option value="30">
-          <option value="40">
-          <option value="50" label="50%">
-          <option value="60">
-          <option value="70">
-          <option value="80">
-          <option value="90">
-          <option value="100" label="100%">
-        </datalist>
-      </div>
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-      var socket = io();
-      var currentInput = "void";
-      var currentOutput = "void";
-      socket.on('switched_input', function(newInput){
-        console.log('switched_input', newInput);
-        if (currentInput !== newInput){
-          currentInput = newInput;
-          var inputEl = document.getElementById('input');
-          inputEl.value = newInput;
-        };
+    }
+  </style>
+</head>
+<body>
+  <header>BabelPod (Stereo + Checkboxes)</header>
+  <div class="container">
+    <label for="inputSelect">Input</label>
+    <select id="inputSelect" size="4">
+      <!-- filled by JS -->
+    </select>
+
+    <label for="outputVolume">Volume</label>
+    <input type="range" min="0" max="100" value="50" id="outputVolume">
+
+    <label>Outputs</label>
+    <div class="checkbox-list" id="outputs">
+      <!-- We dynamically create checkboxes for each device -->
+    </div>
+
+    <button class="btn-refresh" id="btnRefresh">Refresh Devices</button>
+
+    <div class="info-block">
+      <p><strong>Active Input:</strong> <span id="activeInputDisplay">void</span></p>
+      <p><strong>Volume:</strong> <span id="activeVolumeDisplay">50</span>%</p>
+      <p><strong>Active Outputs:</strong></p>
+      <ul id="activeOutputsList"></ul>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    var socket = io();
+    var currentInput = "void";
+    var currentOutputs = [];
+    var currentVolume = 50;
+    var inputEl = document.getElementById('inputSelect');
+    var volumeEl = document.getElementById('outputVolume');
+    var outputsContainer = document.getElementById('outputs');
+
+    var activeInputDisplay = document.getElementById('activeInputDisplay');
+    var activeVolumeDisplay = document.getElementById('activeVolumeDisplay');
+    var activeOutputsList = document.getElementById('activeOutputsList');
+
+    // In Socket.IO v4, usage is basically the same.
+    socket.on('available_inputs', function(list){
+      while(inputEl.firstChild) inputEl.removeChild(inputEl.firstChild);
+      list.forEach(item=>{
+        let opt = document.createElement('option');
+        opt.value=item.id;
+        opt.textContent=item.name;
+        inputEl.appendChild(opt);
       });
-      socket.on('switched_output', function(newOutput){
-        console.log('switched_output', newOutput);
-        if (currentOutput !== newOutput){
-          currentOutput = newOutput;
-          var outputEl = document.getElementById('output');
-          outputEl.value = newOutput;
-        }
+      // restore current input
+      inputEl.value=currentInput;
+    });
+
+    socket.on('available_outputs', function(unified){
+      // “unified” array => each item has {uiId, name, isStereo, devices:[...]}
+      while(outputsContainer.firstChild) outputsContainer.removeChild(outputsContainer.firstChild);
+
+      unified.forEach(item=>{
+        let lb = document.createElement('label');
+        let cb = document.createElement('input');
+        cb.type='checkbox';
+        cb.value=item.uiId;
+        // check if already selected
+        cb.checked = currentOutputs.includes(item.uiId);
+        cb.addEventListener('change', handleOutputCheckboxChange);
+        lb.appendChild(cb);
+        lb.appendChild(document.createTextNode(' '+item.name));
+        outputsContainer.appendChild(lb);
       });
-      socket.on('changed_output_volume', function(volume){
-        console.log('changed_output_volume', volume);
-        var outputVolumeEl = document.getElementById('outputVolume');
-        outputVolumeEl.value = volume;
+      refreshActiveOutputsList();
+    });
+
+    socket.on('switched_input', function(newInput){
+      currentInput=newInput;
+      inputEl.value=newInput;
+      activeInputDisplay.textContent=newInput;
+    });
+    socket.on('switched_output', function(newOuts){
+      if(!Array.isArray(newOuts)) newOuts=[newOuts];
+      currentOutputs=newOuts;
+      // update checkboxes
+      let cbs = outputsContainer.querySelectorAll('input[type=checkbox]');
+      cbs.forEach(cb=>{
+        cb.checked = newOuts.includes(cb.value);
       });
-      socket.on('available_inputs', function(inputs){
-        console.log('available_inputs', inputs);
-        var inputEl = document.getElementById('input');
-        // remove current values
-        while (inputEl.firstChild) {
-          inputEl.removeChild(inputEl.firstChild);
-        }
-        for (var input of inputs){
-          var newOption = document.createElement('option');
-          newOption.innerText = input.name;
-          newOption.setAttribute('value', input.id);
-          inputEl.appendChild(newOption);
-          if (input.id === currentInput) {
-            inputEl.value = input.id;
-          }
-        }
-      });
-      socket.on('available_outputs', function(outputs){
-        console.log('available_outputs', outputs);
-        var outputEl = document.getElementById('output');
-        // remove current values
-        while (outputEl.firstChild) {
-          outputEl.removeChild(outputEl.firstChild);
-        }
-        for (var output of outputs){
-          var newOption = document.createElement('option');
-          newOption.innerText = output.name;
-          newOption.setAttribute('value', output.id);
-          outputEl.appendChild(newOption);
-          if (output.id === currentOutput) {
-            outputEl.value = output.id;
-          }
+      refreshActiveOutputsList();
+    });
+    socket.on('changed_output_volume', function(vol){
+      currentVolume=vol;
+      volumeEl.value=vol;
+      activeVolumeDisplay.textContent=vol;
+    });
+
+    function handleOutputCheckboxChange(ev){
+      let cbs = outputsContainer.querySelectorAll('input[type=checkbox]');
+      let newSelected = [];
+      cbs.forEach(cb=>{
+        if(cb.checked){
+          newSelected.push(cb.value);
         }
       });
-      
-      document.addEventListener('change', async ev => {
-        if(ev.target.id === 'input') {
-          socket.emit('switch_input', ev.target.value);
-        }
-        if(ev.target.id === 'output') {
-          socket.emit('switch_output', ev.target.value);
-        }
-        if(ev.target.id === 'outputVolume') {
-          socket.emit('change_output_volume', ev.target.value);
-        }
+      socket.emit('switch_output', newSelected);
+    }
+
+    function refreshActiveOutputsList(){
+      while(activeOutputsList.firstChild) activeOutputsList.removeChild(activeOutputsList.firstChild);
+      currentOutputs.forEach(o=>{
+        let li = document.createElement('li');
+        li.textContent=o;
+        activeOutputsList.appendChild(li);
       });
-    </script>
-  </body>
+    }
+
+    inputEl.addEventListener('change', function(ev){
+      socket.emit('switch_input', ev.target.value);
+    });
+    volumeEl.addEventListener('input', function(ev){
+      socket.emit('change_output_volume', ev.target.value);
+    });
+
+    // optional refresh
+    document.getElementById('btnRefresh').addEventListener('click', function(){
+      // we can re-emit or do nothing if code is in node side
+      // or just do a ping so node re-check?
+      // we can do: location.reload() or a custom socket emit
+      // location.reload();  // simplistic approach
+      socket.emit('switch_output', currentOutputs);
+      socket.emit('switch_input', currentInput);
+    });
+
+    // init
+    activeInputDisplay.textContent=currentInput;
+    activeVolumeDisplay.textContent=currentVolume;
+    refreshActiveOutputsList();
+  </script>
+</body>
 </html>
