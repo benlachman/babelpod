@@ -16,6 +16,7 @@ const spawn = require('child_process').spawn;
 const fs = require('fs');
 const mdns = require('mdns-js');
 const AirTunes = require('airtunes2');
+const { hostname } = require('os');
 
 // =======================
 // 2) Basic server setup
@@ -123,8 +124,20 @@ function buildUnifiedOutputs() {
     devices: [{ localId: o.id }]
   }));
 
-  let grouped = {};
+  // unify airplay outputs that might appear multiple times if it's the same device
+  // we can unify them by name and host:port, ignoring duplicates
+  let unique = {};
   for (const device of availableAirplayOutputs) {
+    // create a key to unify duplicates
+    const key = (device.name || "") + "_" + device.host + "_" + device.port;
+    if (!unique[key]) {
+      unique[key] = device;
+    }
+  }
+  let cleanedAirplayOutputs = Object.values(unique);
+
+  let grouped = {};
+  for (const device of cleanedAirplayOutputs) {
     const st = device.stereo || `${device.host}:${device.port}`;
     if (!grouped[st]) grouped[st] = [];
     grouped[st].push(device);
@@ -169,7 +182,7 @@ scanPcmDevices();
 setInterval(scanPcmDevices, 10000);
 
 // =======================
-// 8) AirPlay discovery
+// 8) AirPlay + BabelPod Discovery
 // =======================
 let browser = mdns.createBrowser(mdns.tcp('airplay'));
 browser.on('ready', () => {
@@ -193,6 +206,27 @@ browser.on('update', data => {
     }
   }
 });
+
+// ============ Advertise BabelPod service
+let advertise = null;
+function advertiseService() {
+  try {
+    // use random port if needed, otherwise use 3000
+    const p = Number(process.env.BABEL_PORT || 3000);
+    advertise = mdns.createAdvertisement(mdns.tcp('babelpod'), p, {
+      name: hostname().replace('.local', ''),
+      txt: {
+        info: "A BabelPod audio server"
+      }
+    });
+    console.log("Advertising BabelPod service:", advertise);
+
+    advertise.start();
+  } catch (err) {
+    console.log("Error advertising BabelPod service:", err);
+  }
+}
+advertiseService();
 
 // =======================
 // 9) Sync outputs
@@ -267,14 +301,35 @@ app.get('/', (req, res) => {
 // =======================
 // 11) Socket.IO events
 // =======================
+let sessionOwner = null;
+
 io.on('connection', socket => {
+  if (sessionOwner && sessionOwner !== socket.id) {
+    io.to(sessionOwner).emit('sessionLostControl');
+    sessionOwner = socket.id;
+  } else if (!sessionOwner) {
+    sessionOwner = socket.id;
+  }
+  socket.emit('sessionOwnerUpdate', sessionOwner);
+
+  socket.on('user_takeover', () => {
+    if (sessionOwner !== socket.id) {
+      if (sessionOwner) {
+        io.to(sessionOwner).emit('sessionLostControl');
+      }
+      sessionOwner = socket.id;
+      io.emit('sessionOwnerUpdate', sessionOwner);
+    }
+  });
+
   updateAllInputs();
   updateAllOutputs();
   socket.emit('switched_input', currentInput);
   socket.emit('switched_output', selectedOutputs);
   socket.emit('changed_output_volume', volume);
 
-  socket.on('switch_input', devId => {
+  socket.on('switch_input', (devId) => {
+    if (socket.id !== sessionOwner) return;
     cleanupCurrentInput();
     currentInput = devId;
     if (devId === "void") {
@@ -292,17 +347,23 @@ io.on('connection', socket => {
     }
     io.emit('switched_input', currentInput);
   });
-
-  socket.on('switch_output', newList => {
-    if (!Array.isArray(newList)) newList = [newList];
-    syncOutputs(newList);
-    io.emit('switched_output', newList);
+  socket.on('switch_output', (outs) => {
+    if (socket.id !== sessionOwner) return;
+    if (!Array.isArray(outs)) outs = [outs];
+    syncOutputs(outs);
+    io.emit('switched_output', outs);
   });
-
-  socket.on('change_output_volume', vol => {
+  socket.on('change_output_volume', (vol) => {
+    if (socket.id !== sessionOwner) return;
     volume = Number(vol) || 0;
     airtunes.setVolume("all", volume);
     io.emit('changed_output_volume', volume);
+  });
+
+  socket.on('disconnect', () => {
+    if (socket.id === sessionOwner) {
+      sessionOwner = null;
+    }
   });
 });
 
