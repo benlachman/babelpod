@@ -1,9 +1,12 @@
-/* 
+/*
   Babelpod index.js 
   This script handles audio input (arecord) and pipes it to multiple outputs,
   including AirPlay devices (via node_airtunes2) and local aplay processes.
 */
 
+// =======================
+// 1) Required modules
+// =======================
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -14,39 +17,45 @@ const fs = require('fs');
 const mdns = require('mdns-js');
 const AirTunes = require('airtunes2');
 
-// Create basic server
+// =======================
+// 2) Basic server setup
+// =======================
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-////////////////////////////////////////////////////////////////
-// One global AirTunes instance for all AirPlay devices
+// =======================
+// 3) Global AirTunes & local processes
+// =======================
 const airtunes = new AirTunes();
-
-// Keep track of local child processes for PCM outputs
 let activeLocalOutputs = [];
 
-// Provide a fallback discard sink if no outputs are selected
+// =======================
+// 4) Fallback sink setup
+//    (stream to nowhere)
+// =======================
 util.inherits(DiscardSink, stream.Writable);
 function DiscardSink() {
   if (!(this instanceof DiscardSink)) return new DiscardSink();
   stream.Writable.call(this);
 }
-DiscardSink.prototype._write = function (_chunk, _enc, cb) { cb(); };
-
-// Fallback sink
+DiscardSink.prototype._write = function (_chunk, _enc, cb) {
+  cb();
+};
 const fallbackSink = new DiscardSink();
 
-// Create a duplicator for the audio data
+// =======================
+// 5) Main audio duplicator
+// =======================
 const duplicator = new stream.PassThrough({ highWaterMark: 65536 });
 duplicator.pipe(fallbackSink);
-
-// Also pipe duplicator to airtunes
 duplicator.pipe(airtunes).on('error', e => {
   console.log("AirTunes piping error:", e);
 });
 
-// Current input
+// =======================
+// 6) Current audio input
+// =======================
 let currentInput = "void";
 let arecordInstance = null;
 
@@ -56,10 +65,10 @@ function FromVoid() {
   stream.Readable.call(this);
 }
 FromVoid.prototype._read = function () { };
-
 let inputStream = new FromVoid();
 inputStream.pipe(duplicator);
 
+// Clean up current input, stop processes
 function cleanupCurrentInput() {
   if (inputStream) {
     inputStream.unpipe(duplicator);
@@ -70,8 +79,9 @@ function cleanupCurrentInput() {
   }
 }
 
-////////////////////////////////////////////////////////////////
-// Volume, output tracking
+// =======================
+// 7) Volume & outputs
+// =======================
 let volume = 50;
 let selectedOutputs = [];
 
@@ -79,10 +89,9 @@ let availablePcmOutputs = [];
 let availablePcmInputs = [];
 let availableBluetoothInputs = [];
 let availableAirplayOutputs = [];
-
-// Combine them for the UI
 let unifiedOutputs = [];
 
+// Scan for PCM devices
 function scanPcmDevices() {
   try {
     const text = fs.readFileSync('/proc/asound/pcm', 'utf8');
@@ -105,6 +114,7 @@ function scanPcmDevices() {
   }
 }
 
+// Organize available outputs into a single list
 function buildUnifiedOutputs() {
   let local = availablePcmOutputs.map(o => ({
     uiId: o.id,
@@ -112,18 +122,15 @@ function buildUnifiedOutputs() {
     isStereo: false,
     devices: [{ localId: o.id }]
   }));
-  let grouped = {};
 
+  let grouped = {};
   for (const device of availableAirplayOutputs) {
     const st = device.stereo || `${device.host}:${device.port}`;
-    if (!grouped[st])
-      grouped[st] = [];
-
+    if (!grouped[st]) grouped[st] = [];
     grouped[st].push(device);
   }
 
   let air = [];
-
   for (const stereoName in grouped) {
     const arr = grouped[stereoName];
     if (arr.length === 1) {
@@ -146,20 +153,24 @@ function buildUnifiedOutputs() {
   return local.concat(air);
 }
 
+// Emit updates to clients
 function updateAllOutputs() {
   unifiedOutputs = buildUnifiedOutputs();
   io.emit('available_outputs', unifiedOutputs);
 }
-
 function updateAllInputs() {
   const defInputs = [{ name: 'None', id: 'void' }];
   const finalIn = defInputs.concat(availablePcmInputs, availableBluetoothInputs);
   io.emit('available_inputs', finalIn);
 }
 
+// Initial device scan
 scanPcmDevices();
 setInterval(scanPcmDevices, 10000);
 
+// =======================
+// 8) AirPlay discovery
+// =======================
 let browser = mdns.createBrowser(mdns.tcp('airplay'));
 browser.on('ready', () => {
   browser.discover();
@@ -183,6 +194,10 @@ browser.on('update', data => {
   }
 });
 
+// =======================
+// 9) Sync outputs
+//    (add/remove from duplicator)
+// =======================
 function syncOutputs(newSelected) {
   const old = selectedOutputs.slice();
   selectedOutputs = newSelected.slice();
@@ -190,6 +205,7 @@ function syncOutputs(newSelected) {
   const removed = old.filter(r => !selectedOutputs.includes(r));
   const added = selectedOutputs.filter(a => !old.includes(a));
 
+  // Remove old outputs
   removed.forEach(rid => {
     if (rid.startsWith("plughw:")) {
       for (let i = activeLocalOutputs.length - 1; i >= 0; i--) {
@@ -212,10 +228,16 @@ function syncOutputs(newSelected) {
     }
   });
 
+  // Add new outputs
   added.forEach(aid => {
     if (aid === "void") return;
     if (aid.startsWith("plughw:")) {
-      const child = spawn("aplay", ["-D", aid, "-c", "2", "-f", "S16_LE", "-r", "44100"]);
+      const child = spawn("aplay", [
+        "-D", aid,
+        "-c", "2",
+        "-f", "S16_LE",
+        "-r", "44100"
+      ]);
       duplicator.pipe(child.stdin);
       activeLocalOutputs.push({ id: aid, process: child });
     } else if (aid.startsWith("air:") || aid.startsWith("airpair:")) {
@@ -235,10 +257,16 @@ function syncOutputs(newSelected) {
   airtunes.setVolume("all", volume);
 }
 
+// =======================
+// 10) Express routes
+// =======================
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/index.html');
 });
 
+// =======================
+// 11) Socket.IO events
+// =======================
 io.on('connection', socket => {
   updateAllInputs();
   updateAllOutputs();
@@ -253,7 +281,12 @@ io.on('connection', socket => {
       inputStream = new FromVoid();
       inputStream.pipe(duplicator);
     } else {
-      arecordInstance = spawn("arecord", ["-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100"]);
+      arecordInstance = spawn("arecord", [
+        "-D", devId,
+        "-c", "2",
+        "-f", "S16_LE",
+        "-r", "44100"
+      ]);
       inputStream = arecordInstance.stdout;
       inputStream.pipe(duplicator);
     }
@@ -273,8 +306,10 @@ io.on('connection', socket => {
   });
 });
 
-let PORT = process.env.BABEL_PORT || 4000;
-
+// =======================
+// 12) Start server
+// =======================
+let PORT = process.env.BABEL_PORT || 3000;
 server.listen(PORT, () => {
   console.log("Babelpod listening on port:", PORT);
 });
