@@ -1,37 +1,68 @@
 /*
  Babelpod index.js
+ => Now actually pipes input data to each selected output.
+ => We use a PassThrough "duplicator" to broadcast to multiple outputs:
+    - A single global AirTunes instance for all AirPlay devices.
+    - Child processes (aplay) for local outputs.
 
- - Collapses stereo pairs: if two devices share the same stereoName (from gpn=).
- - Replaces multi-select with a set of checkboxes in index.html.
- - When user selects a “stereo device,” we add both underlying devices with stereo:true.
+ If no outputs are selected, we pipe to fallback /dev/null so data is discarded.
 
- For more details, see usage in index.html.
+ This code is only a demonstration. Customize as needed.
 */
 
-var app = require('express')();
-var http = require('http').Server(app);
-var { Server } = require('socket.io');
-var io = new Server(http);
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const stream = require('stream');
+const util = require('util');
+const spawn = require('child_process').spawn;
+const fs = require('fs');
+const mdns = require('mdns-js');
+const AirTunes = require('airtunes2');
 
-var spawn = require('child_process').spawn;
-var util = require('util');
-var stream = require('stream');
-var mdns = require('mdns-js');
-var fs = require('fs');
-var AirTunes = require('airtunes2');
+// Express + Socket.IO
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
 
-var airtunes = new AirTunes();
+//////////////////////////////////////////////////////////
+// 1) A single AirTunes instance for all AirPlay outputs
+const airtunes = new AirTunes();
 
-// Streams that do nothing
-util.inherits(ToVoid, stream.Writable);
-function ToVoid() {
-  if (!(this instanceof ToVoid)) return new ToVoid();
+/** We'll also keep track of local child process output streams. */
+let activeLocalOutputs = []; // array of { id, process, piped: boolean }
+
+/** For discard if no outputs */
+util.inherits(DiscardSink, stream.Writable);
+function DiscardSink() {
+  if (!(this instanceof DiscardSink)) return new DiscardSink();
   stream.Writable.call(this);
 }
-ToVoid.prototype._write = function (_chunk, _enc, cb) {
-  cb();
-};
+DiscardSink.prototype._write = function (_chunk, _enc, cb) { cb(); };
 
+// Our fallback sink if zero outputs are selected
+let fallbackSink = new DiscardSink();
+
+// We have a "duplicator" pass-through to pipe input to multiple outputs
+let duplicator = new stream.PassThrough({ highWaterMark: 65536 });
+
+// Always pipe duplicator -> fallback (discard)
+duplicator.pipe(fallbackSink).on('error', e => {
+  console.log("error piping to fallbackDiscard:", e);
+});
+
+// Also pipe duplicator -> AirTunes. If no AirTunes devices are added, it just won't do anything.
+duplicator.pipe(airtunes).on('error', e => {
+  console.log("error piping to AirTunes:", e);
+});
+
+//////////////////////////////////////////////////////////
+// Current input (arecord) management
+let currentInput = "void";
+let arecordInstance = null;
+
+// The inputStream we read from => duplicator
+// We default to a "FromVoid" so there's no data if none
 util.inherits(FromVoid, stream.Readable);
 function FromVoid() {
   if (!(this instanceof FromVoid)) return new FromVoid();
@@ -39,158 +70,144 @@ function FromVoid() {
 }
 FromVoid.prototype._read = function () { };
 
-// Current input
-var currentInput = "void";
-var inputStream = new FromVoid();
-var arecordInstance = null;
-
-// Fallback for “no real output”
-var fallbackOutputStream = new ToVoid();
-inputStream.pipe(fallbackOutputStream).on('error', e => {
-  console.log('fallback pipe error: ', e);
+let inputStream = new FromVoid();
+// pipe input -> duplicator
+inputStream.pipe(duplicator).on('error', err => {
+  console.log("Error piping input->duplicator:", err);
 });
 
-// Our active devices
-var activeDevices = [];
-// Our “selected outputs” from the user, an array of “UI IDs.”
-var selectedOutputs = [];
-// Our master volume
-var volume = 20;
-
-// Raw discovered outputs
-var availableBluetoothInputs = [];
-var availablePcmOutputs = [];
-var availablePcmInputs = [];
-var availableAirplayOutputs = [];
-
-// Merged / grouped devices for the UI (some might be stereo pairs).
-// Each entry has shape: { uiId, name, isStereo, devices: [ {host, port, stereoFlag} ... ] }
-var unifiedOutputs = [];
-
-////////////////////////////
-// PCM scanning
-function pcmDeviceSearch() {
-  try {
-    var pcm = fs.readFileSync('/proc/asound/pcm', 'utf8');
-  } catch (e) {
-    console.log("Could not read /proc/asound/pcm for PCM devices");
-    return;
+/** Cleans up the old input (arecord) if any, unpipes from duplicator. */
+function cleanupCurrentInput() {
+  if (inputStream) {
+    inputStream.unpipe(duplicator);
   }
-  var lines = pcm.split("\n").filter(l => l);
-  var all = lines.map(line => {
-    var splitDev = line.split(":");
-    var idVal = "plughw:" + splitDev[0].split("-").map(num => parseInt(num, 10)).join(",");
-    return {
-      id: idVal,
-      name: splitDev[2].trim(),
-      output: splitDev.some(part => part.includes("playback")),
-      input: splitDev.some(part => part.includes("capture"))
-    };
-  });
-  availablePcmOutputs = all.filter(d => d.output);
-  availablePcmInputs = all.filter(d => d.input);
-  updateAllInputs();
-  updateAllOutputs();
-}
-pcmDeviceSearch();
-setInterval(pcmDeviceSearch, 10000);
-
-function updateAllInputs() {
-  // we combine all possible inputs
-  var defaultIn = [{ name: 'None', id: 'void' }];
-  var list = defaultIn.concat(availablePcmInputs, availableBluetoothInputs);
-  io.emit('available_inputs', list);
+  if (arecordInstance) {
+    arecordInstance.kill();
+    arecordInstance = null;
+  }
 }
 
-// The main function that merges AirPlay devices by stereoName
+//////////////////////////////////////////////////////////
+// Track volume (0..100)
+let volume = 50;
+
+// For multiple outputs, we keep a "selectedOutputs" array of string IDs
+let selectedOutputs = [];
+
+// We'll define these from scanning: local (PCM) + airplay
+let availablePcmOutputs = [];
+let availablePcmInputs = [];
+let availableBluetoothInputs = [];
+let availableAirplayOutputs = [];
+
+/** We also unify them for the UI: each item => { uiId, name, isStereo, devices[...] } or local. */
+let unifiedOutputs = [];
+
+//////////////////////////////////////////////////////////
+// PCM scanning
+function scanPcmDevices() {
+  try {
+    let text = fs.readFileSync('/proc/asound/pcm', 'utf8');
+    let lines = text.split('\n').filter(l => l.trim() !== '');
+    let all = lines.map(line => {
+      let parts = line.split(':');
+      let devName = parts[2].trim();
+      let devId = "plughw:" + parts[0].split("-").map(x => parseInt(x, 10)).join(",");
+      return {
+        id: devId,
+        name: devName,
+        output: parts.some(t => t.includes("playback")),
+        input: parts.some(t => t.includes("capture"))
+      };
+    });
+    availablePcmOutputs = all.filter(d => d.output);
+    availablePcmInputs = all.filter(d => d.input);
+  } catch (e) {
+    console.log("Could not scan /proc/asound/pcm:", e);
+  }
+}
+
+// We'll unify them into "unifiedOutputs" for the UI
 function buildUnifiedOutputs() {
-  // We combine local outputs + grouped airplay
-  // local outputs => pass directly
-  // airplay => group by stereoName
+  // local
   let local = availablePcmOutputs.map(o => {
     return {
-      uiId: o.id,   // same as the actual id
-      name: "Local: " + o.name,
+      uiId: o.id,
+      name: 'Local: ' + o.name,
       isStereo: false,
-      devices: [{ host: null, port: null, localId: o.id }] // indicates local
+      devices: [{ localId: o.id }]
     };
   });
 
-  // group airplay
-  // e.g. { stereoName -> [ {host, port, name, stereoName}, {host, port, ...}, ... ] }
+  // group airplay by stereo name
   let grouped = {};
-  // If no stereoName, treat them individually with a pseudo name
   for (let dev of availableAirplayOutputs) {
-    let sname = dev.stereo || dev.stereoName || dev.host + ":" + dev.port;
-    if (!grouped[sname]) grouped[sname] = [];
-    grouped[sname].push(dev);
+    let st = dev.stereo || dev.host + ":" + dev.port;
+    if (!grouped[st]) grouped[st] = [];
+    grouped[st].push(dev);
   }
-
   let airplayMerged = [];
-  for (let sname in grouped) {
-    let arr = grouped[sname];
+  for (let stereoName in grouped) {
+    let arr = grouped[stereoName];
     if (arr.length === 1) {
-      // single device
+      // single
       let d = arr[0];
-      let uiId = "air:" + sname;
       airplayMerged.push({
-        uiId: uiId,
-        name: d.name + (d.stereo ? " (StereoCandidate)" : ""),
+        uiId: 'air:' + d.host + ':' + d.port,
+        name: 'Air: ' + (d.name || 'Device'),
         isStereo: false,
-        devices: [{ host: d.host, port: d.port, stereoFlag: !!d.stereo }]
+        devices: [{ host: d.host, port: d.port, isStereo: false }]
       });
     } else {
-      // multiple => treat as stereo pair
-      // if you want to confirm exactly 2, you can do that
-      let devName = arr.map(x => x.name).join(" & ");
-      let uiId = "airpair:" + sname;
+      // multiple => treat as stereo
       airplayMerged.push({
-        uiId: uiId,
-        name: sname + " (Stereo)",  // or devName
+        uiId: 'airpair:' + stereoName,
+        name: 'AirPair: ' + stereoName,
         isStereo: true,
-        devices: arr.map(x => ({
-          host: x.host,
-          port: x.port,
-          stereoFlag: true
+        devices: arr.map(d => ({
+          host: d.host, port: d.port, isStereo: true
         }))
       });
     }
   }
-
-  let combined = local.concat(airplayMerged);
-  return combined;
+  return local.concat(airplayMerged);
 }
 
-// push to front end
 function updateAllOutputs() {
   unifiedOutputs = buildUnifiedOutputs();
   io.emit('available_outputs', unifiedOutputs);
 }
 
-//////////////////////////////
+function updateAllInputs() {
+  let defIn = [{ name: 'None', id: 'void' }];
+  let final = defIn.concat(availablePcmInputs, availableBluetoothInputs);
+  io.emit('available_inputs', final);
+}
+
+scanPcmDevices();
+setInterval(scanPcmDevices, 10000);
+//////////////////////////////////////////////////////////
 // mdns for airplay
-var browser = mdns.createBrowser(mdns.tcp('airplay'));
+let browser = mdns.createBrowser(mdns.tcp('airplay'));
 browser.on('ready', () => {
   browser.discover();
 });
 browser.on('update', data => {
   if (!data.fullname) return;
-  let re = /(.*)\._airplay\._tcp\.local/;
-  let m = re.exec(data.fullname);
+  let reg = /(.*)\._airplay\._tcp\.local/;
+  let m = reg.exec(data.fullname);
   if (m && m.length > 1) {
     let address = data.addresses[0];
     let port = data.port;
-    let id = "airplay_" + address + "_" + port;
-    if (!availableAirplayOutputs.some(e => e.host === address && e.port === port)) {
+    let exId = "air_" + address + "_" + port;
+    if (!availableAirplayOutputs.find(d => d.host === address && d.port === port)) {
       let stName = null;
       data.txt.forEach(t => {
         if (t.startsWith("gpn=")) stName = t.substring(4);
       });
       availableAirplayOutputs.push({
         name: m[1],
-        id: id,
-        stereo: stName, // store it in .stereo
-        stereoName: stName,
+        stereo: stName,
         host: address,
         port: port
       });
@@ -199,184 +216,157 @@ browser.on('update', data => {
   }
 });
 
-//////////////////////////////
-// Cleanup current input
-function cleanupCurrentInput() {
-  inputStream.unpipe(fallbackOutputStream);
-  if (arecordInstance) {
-    arecordInstance.kill();
-    arecordInstance = null;
-  }
-}
+//////////////////////////////////////////////////////////
+// “syncOutputs” => add or remove outputs from the duplicator
+// For local => spawn aplay and pipe duplicator -> child.stdin
+// For airplay => call airtunes.add(...) or airtunes.stop(...) in that single global instance
+// stored in activeLocalOutputs or airtunes devices.
 
-// spawn local aplay
-function spawnAplay(localId) {
-  let aplayProc = spawn("aplay", [
-    '-D', localId,
-    '-c', '2',
-    '-f', 'S16_LE',
-    '-r', '44100'
-  ]);
-  inputStream.pipe(aplayProc.stdin).on('error', err => {
-    console.log('pipe to aplay error:', err);
-  });
-  return {
-    _id: localId,
-    stop(cb) {
-      try { aplayProc.kill(); } catch (e) { }
-      if (cb) cb();
-    },
-    setVolume() {
-      // local volume => do amixer if wanted
-    }
-  };
-}
-
-// spawn airplay device
-function spawnAirplayDevice(opts) {
-  // opts => {host, port, stereoFlag}
-  let dev = airtunes.add(opts.host, {
-    port: opts.port,
-    volume: volume,
-    stereo: !!opts.stereoFlag
-  });
-  dev.on('status', s => {
-    console.log('airplay device =>', s);
-  });
-  return dev;
-}
-
-// for each UI device => add devices
-function addUnifiedDevice(ud) {
-  // ud => { uiId, name, isStereo, devices: [ {host,port, localId?, stereoFlag?} ] }
-  let devs = [];
-  for (let d of ud.devices) {
-    if (d.localId) {
-      // local
-      let localObj = spawnAplay(d.localId);
-      devs.push(localObj);
-    } else {
-      // airplay
-      let airObj = spawnAirplayDevice(d);
-      devs.push(airObj);
-    }
-  }
-  return devs;
-}
-
-/**
- * syncOutputs:
- *  - newOutputs is an array of uiId from user’s checkbox selection
- *  - we remove everything not in newOutputs
- *  - we add new devices for newly selected
- */
-function syncOutputs(newOutputs) {
+function syncOutputs(newSelected) {
   let old = selectedOutputs.slice();
-  selectedOutputs = newOutputs.slice();
+  selectedOutputs = newSelected.slice();
 
   // find removed
-  let removed = old.filter(o => !selectedOutputs.includes(o));
-  let added = selectedOutputs.filter(o => !old.includes(o));
+  let removed = old.filter(r => !selectedOutputs.includes(r));
+  let added = selectedOutputs.filter(a => !old.includes(a));
 
-  // remove
+  // remove local aplay for each removed
   removed.forEach(rid => {
-    // find in activeDevices
-    // but we have no direct “uiId” on them. We can store a property ._ui
-    // so we need to do: find all devices that have ._ui===rid, remove them
-    for (let i = activeDevices.length - 1; i >= 0; i--) {
-      if (activeDevices[i]._ui === rid) {
-        try { activeDevices[i].stop(); } catch (e) { }
-        activeDevices.splice(i, 1);
+    // local or air?
+    if (rid.startsWith("plughw:")) {
+      // find it
+      for (let i = activeLocalOutputs.length - 1; i >= 0; i--) {
+        if (activeLocalOutputs[i].id === rid) {
+          let p = activeLocalOutputs[i];
+          try {
+            duplicator.unpipe(p.process.stdin);
+          } catch (e) { }
+          try {
+            p.process.kill();
+          } catch (e) { }
+          activeLocalOutputs.splice(i, 1);
+        }
+      }
+    } else if (rid.startsWith("air:") || rid.startsWith("airpair:")) {
+      // find the unified device
+      let ud = unifiedOutputs.find(u => u.uiId === rid);
+      if (ud) {
+        // for each sub device => call airtunes.stop
+        ud.devices.forEach(sub => {
+          if (sub.host && sub.port) {
+            // key?
+            let key = sub.host + ":" + sub.port;
+            airtunes.stop(key);
+          }
+        });
       }
     }
   });
 
-  // add
+  // add local aplay or air
   added.forEach(aid => {
-    if (aid === "void") return;
-    let foundUD = unifiedOutputs.find(u => u.uiId === aid);
-    if (!foundUD) return; // unknown device
-    let newDevs = addUnifiedDevice(foundUD);
-    // we store ._ui
-    newDevs.forEach(nd => {
-      nd._ui = aid;
-      activeDevices.push(nd);
-    });
+    if (aid === "void") return; // ignore
+    if (aid.startsWith("plughw:")) {
+      // local
+      let child = spawn("aplay", [
+        '-D', aid,
+        '-c', '2',
+        '-f', 'S16_LE',
+        '-r', '44100'
+      ]);
+      duplicator.pipe(child.stdin).on('error', e => {
+        console.log("Error piping to local aplay for", aid, e);
+      });
+      activeLocalOutputs.push({ id: aid, process: child });
+    } else if (aid.startsWith("air:") || aid.startsWith("airpair:")) {
+      // air
+      let ud = unifiedOutputs.find(u => u.uiId === aid);
+      if (!ud) return;
+      // add each device
+      ud.devices.forEach(sub => {
+        if (sub.host && sub.port) {
+          airtunes.add(sub.host, {
+            port: sub.port,
+            volume,
+            stereo: !!sub.isStereo,
+            debug: false
+          }).on('status', st => {
+            console.log("air device =>", st);
+          });
+        }
+      });
+    }
   });
 
-  // fallback if none
-  if (!selectedOutputs.length || selectedOutputs.every(x => x === "void")) {
-    inputStream.unpipe(fallbackOutputStream);
-    fallbackOutputStream = new ToVoid();
-    inputStream.pipe(fallbackOutputStream).on('error', e => {
-      console.log('fallback pipe error:', e);
-    });
-  } else {
-    // we do the same fallback but it’s unused
-    inputStream.unpipe(fallbackOutputStream);
-    fallbackOutputStream = new ToVoid();
-    inputStream.pipe(fallbackOutputStream).on('error', e => {
-      console.log('fallback pipe error:', e);
-    });
-  }
+  // fallback => if user selected zero real outputs, ensure fallback is still piped
+  // which is always the case since duplicator->fallback is set. no changes needed.
+
+  // set volume on all air devices
+  // (the new ones got volume in constructor, but let's be consistent)
+  airtunes.setVolume("all", volume);
+
+  console.log("Active outputs =>", selectedOutputs);
 }
 
+//////////////////////////////////////////////////////////
 // Express
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/index.html');
 });
 
+//////////////////////////////////////////////////////////
 // Socket.io
 io.on('connection', socket => {
-  console.log('client connected');
-  // push our lists
+  console.log("client connected");
+  // push current info
   updateAllInputs();
   updateAllOutputs();
-
   socket.emit('switched_input', currentInput);
   socket.emit('switched_output', selectedOutputs);
   socket.emit('changed_output_volume', volume);
 
-  socket.on('change_output_volume', vol => {
-    volume = vol;
-    for (let dev of activeDevices) {
-      if (dev.setVolume) dev.setVolume(vol);
-    }
-    io.emit('changed_output_volume', volume);
-  });
-
-  socket.on('switch_output', newOutputs => {
-    console.log('switch_output => ', newOutputs);
-    if (!Array.isArray(newOutputs)) newOutputs = [newOutputs];
-    syncOutputs(newOutputs);
-    io.emit('switched_output', newOutputs);
-  });
-
-  socket.on('switch_input', inputSel => {
-    console.log('switch_input => ', inputSel);
-    currentInput = inputSel;
+  socket.on('switch_input', devId => {
+    console.log("switch_input =>", devId);
     cleanupCurrentInput();
-    if (currentInput === "void") {
+    currentInput = devId;
+    if (devId === "void") {
       inputStream = new FromVoid();
-      inputStream.pipe(fallbackOutputStream);
+      inputStream.pipe(duplicator);
     } else {
+      // spawn arecord
       arecordInstance = spawn("arecord", [
-        '-D', currentInput,
-        '-c', "2",
-        '-f', "S16_LE",
-        '-r', "44100"
+        '-D', devId,
+        '-c', '2',
+        '-f', 'S16_LE',
+        '-r', '44100'
       ]);
       inputStream = arecordInstance.stdout;
-      inputStream.pipe(fallbackOutputStream);
+      inputStream.pipe(duplicator);
     }
     io.emit('switched_input', currentInput);
   });
 
+  socket.on('switch_output', newList => {
+    if (!Array.isArray(newList)) newList = [newList];
+    syncOutputs(newList);
+    io.emit('switched_output', newList);
+  });
+
+  socket.on('change_output_volume', vol => {
+    volume = Number(vol) || 0;
+    // set on airtunes
+    airtunes.setVolume("all", volume);
+    // local doesn't do direct setVolume. you'd do amixer if you want
+    io.emit('changed_output_volume', volume);
+  });
+
   socket.on('disconnect', () => {
-    console.log('client disconnected');
+    console.log("client disconnected");
   });
 });
 
-http.listen(3000, () => {
-  console.log("Babelpod listening on :3000");
+//////////////////////////////////////////////////////////
+// Start
+server.listen(3000, () => {
+  console.log("Babelpod started on port 3000");
 });
