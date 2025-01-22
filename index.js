@@ -304,6 +304,8 @@ app.get('/', (req, res) => {
 let sessionOwner = null;
 
 io.on('connection', socket => {
+  console.log("Client connected:", socket.id);
+
   if (sessionOwner && sessionOwner !== socket.id) {
     io.to(sessionOwner).emit('sessionLostControl');
     sessionOwner = socket.id;
@@ -313,6 +315,8 @@ io.on('connection', socket => {
   socket.emit('sessionOwnerUpdate', sessionOwner);
 
   socket.on('user_takeover', () => {
+    console.log("User takeover:", socket.id);
+
     if (sessionOwner !== socket.id) {
       if (sessionOwner) {
         io.to(sessionOwner).emit('sessionLostControl');
@@ -329,6 +333,8 @@ io.on('connection', socket => {
   socket.emit('changed_output_volume', volume);
 
   socket.on('switch_input', (devId) => {
+    console.log("Switching input to:", devId);
+
     if (socket.id !== sessionOwner) return;
     cleanupCurrentInput();
     currentInput = devId;
@@ -347,13 +353,19 @@ io.on('connection', socket => {
     }
     io.emit('switched_input', currentInput);
   });
+
   socket.on('switch_output', (outs) => {
+    console.log("Switching output to:", outs);
+
     if (socket.id !== sessionOwner) return;
     if (!Array.isArray(outs)) outs = [outs];
     syncOutputs(outs);
     io.emit('switched_output', outs);
   });
+
   socket.on('change_output_volume', (vol) => {
+    console.log("Changing output volume to:", vol);
+
     if (socket.id !== sessionOwner) return;
     volume = Number(vol) || 0;
     airtunes.setVolume("all", volume);
@@ -361,6 +373,8 @@ io.on('connection', socket => {
   });
 
   socket.on('disconnect', () => {
+    console.log("Client disconnected:", socket.id);
+
     if (socket.id === sessionOwner) {
       sessionOwner = null;
     }
