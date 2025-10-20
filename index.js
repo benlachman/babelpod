@@ -98,7 +98,7 @@ let selectedOutputs = [];
 
 let availablePcmOutputs = [];
 let availablePcmInputs = [];
-let availableBluetoothInputs = [];
+let availableBluetoothInputs = []; // TODO: Bluetooth input discovery not yet implemented
 let availableAirplayOutputs = [];
 let unifiedOutputs = [];
 
