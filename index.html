@@ -1,182 +1,315 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
-<head>
-  <title>BabelPod with actual piping</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <style>
-    body {
-      margin:0;
-      padding:0;
-      font-family: sans-serif;
-      background: #f3f4f6;
-      color: #333;
-    }
-    h1 {
-      background: #374151;
-      color: #fff;
-      padding: 1rem;
-      margin: 0;
-      text-align:center;
-    }
-    .container {
-      max-width: 540px;
-      margin: 1rem auto;
-      padding: 1rem;
-      background: #fff;
-      border-radius: 8px;
-    }
-    label {
-      display: block;
-      margin-top:1rem;
-      font-weight:600;
-      font-size:1rem;
-    }
-    select {
-      width:100%;
-      margin:0.5rem 0;
-    }
-    #outputVolume {
-      width:100%;
-      margin:0.5rem 0;
-    }
-    .checkbox-list {
-      padding:0.5rem;
-      border: 1px solid #ccc;
-      border-radius:8px;
-      background: #f9fafb;
-    }
-    .checkbox-list label {
-      display:flex;
-      align-items:center;
-      margin:0.3rem 0;
-    }
-    .checkbox-list input[type=checkbox] {
-      margin-right:0.5rem;
-      transform: scale(1.2);
-    }
-    .info-block {
-      margin-top:1rem;
-      background:#fdfaea;
-      padding:1rem;
-      border-radius:6px;
-      border:1px solid #ece5c5;
-    }
-  </style>
-</head>
-<body>
-  <h1>BabelPod</h1>
-  <div class="container">
-    <label>Input Device</label>
-    <select id="inputSelect" size="4"></select>
+  <head>
+    <title>BabelPod</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 6px;
+        background: transparent;
+        border-radius: 3px;
+        outline: none;
+        cursor: pointer;
+      }
+      input[type="range"]::-webkit-slider-runnable-track {
+        background: linear-gradient(to right, #bbb 0%, #555 100%);
+        height: 6px;
+        border-radius: 3px;
+      }
+      input[type="range"]::-webkit-slider-runnable-track {
+        background: linear-gradient(
+          to right,
+          #920000 0%,
+          #fe0000 var(--progress),
+          #666 var(--progress),
+          #666 100%
+        );
+      }
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        background: #ccc;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        margin-top: -5px;
+        cursor: pointer;
+        box-shadow: 0px 0px 5px rgba(0, 0, 0, 0.3);
+      }
+      input[type="range"]::-moz-range-track {
+        background: linear-gradient(to right, #999 0%, #666 100%);
+        height: 6px;
+        border-radius: 3px;
+      }
+      input[type="range"]::-moz-range-thumb {
+        background: #ccc;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      input[type="range"]::-ms-track {
+        background: transparent;
+        height: 6px;
+        border-radius: 3px;
+        border: none;
+        color: transparent;
+      }
+      input[type="range"]::-ms-fill-lower {
+        background: #ccc;
+        border-radius: 3px;
+      }
+      input[type="range"]::-ms-fill-upper {
+        background: #666;
+        border-radius: 3px;
+      }
+      input[type="range"]::-ms-thumb {
+        background: #ccc;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+      input[type="range"]:focus {
+        outline: none;
+      }
+      input[type="range"]:hover::-webkit-slider-runnable-track {
+        background: linear-gradient(to right, #bbb 0%, #555 100%);
+      }
+      input[type="range"]:hover::-webkit-slider-thumb {
+        background: #ddd;
+      }
 
-    <label>Volume</label>
-    <input id="volumeRange" type="range" min="0" max="100" value="50" />
+      body {
+        margin: 0;
+        padding: 0;
+        background: #121212;
+        color: #ddd;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      header {
+        background: #1f1f1f;
+        padding: 1rem;
+        text-align: center;
+        font-size: 1.5rem;
+      }
+      .container {
+        max-width: 540px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+      label {
+        display: block;
+        margin: 1rem 0 0.25rem;
+        font-weight: 500;
+      }
+      .checkbox-list {
+        background: #2a2a2a;
+        border: 1px solid #444;
+        border-radius: 6px;
+        padding: 0.5rem;
+      }
+      .checkbox-list label {
+        display: flex;
+        align-items: center;
+        margin: 0.4rem 0;
+      }
+      .checkbox-list input[type="checkbox"] {
+        margin-right: 0.5rem;
+        transform: scale(1.2);
+      }
+      .info {
+        background: #1f1f1f;
+        margin-top: 1rem;
+        padding: 1rem;
+        border-radius: 6px;
+        font-size: 0.9rem;
+      }
 
-    <label>Outputs</label>
-    <div class="checkbox-list" id="outputsArea"></div>
+      /* Session overlay */
+      #sessionOverlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.75);
+        color: #fff;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        z-index: 9999;
+      }
+      #sessionOverlay button {
+        margin-top: 1rem;
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+        background: #444;
+        border: none;
+        border-radius: 4px;
+        color: white;
+        cursor: pointer;
+      }
+      #sessionOverlay button:hover {
+        background: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <header>BabelPod</header>
+    <div class="container">
+      <label for="inputSelect">Input Device</label>
+      <select id="inputSelect" size="4"></select>
 
-    <div class="info-block">
-      <p><strong>Current Input:</strong> <span id="curInputText">void</span></p>
-      <p><strong>Current Volume:</strong> <span id="curVolumeText">50</span></p>
-      <p><strong>Current Outputs:</strong></p>
-      <ul id="curOutputsList"></ul>
+      <label for="outputVolume">Volume</label>
+      <input type="range" min="0" max="100" value="50" id="outputVolume" />
+
+      <label>Outputs</label>
+      <div class="checkbox-list" id="outputsList"></div>
+
+      <div class="info">
+        <p>Current Input: <span id="curInputText"></span></p>
+        <p>Current Volume: <span id="curVolumeText"></span></p>
+        <p>Active Outputs:</p>
+        <ul id="activeOutputs"></ul>
+      </div>
     </div>
-  </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io();
+    <div id="sessionOverlay">
+      <h1>You are not controlling BabelPod</h1>
+      <p>Another user is controlling. You can take over.</p>
+      <button id="takeOverBtn">Take Over Control</button>
+    </div>
 
-    let currentInput = "void";
-    let currentVolume= 50;
-    let currentOutputs=[];
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const rangeInput = document.querySelector('input[type="range"]');
 
-    const inputSel = document.getElementById('inputSelect');
-    const volumeEl = document.getElementById('volumeRange');
-    const outputsArea = document.getElementById('outputsArea');
+      function updateSliderProgress() {
+        const value = rangeInput.value;
+        const max = rangeInput.max || 100;
+        const percentage = (value / max) * 100;
+        rangeInput.style.setProperty("--progress", `${percentage}%`);
+      }
 
-    const curInputText = document.getElementById('curInputText');
-    const curVolumeText= document.getElementById('curVolumeText');
-    const curOutputsList= document.getElementById('curOutputsList');
+      rangeInput.addEventListener("input", updateSliderProgress);
+      updateSliderProgress();
 
-    function refreshOutputsList() {
-      // remove all
-      while(curOutputsList.firstChild) curOutputsList.removeChild(curOutputsList.firstChild);
-      currentOutputs.forEach(o=>{
-        let li = document.createElement('li');
-        li.textContent=o;
-        curOutputsList.appendChild(li);
+      const socket = io();
+
+      let currentInput = "void";
+      let currentVolume = 50;
+      let currentOutputs = [];
+      let isOwner = false;
+
+      const inputSelect = document.getElementById("inputSelect");
+      const volumeRange = document.getElementById("outputVolume");
+      const outputsListDiv = document.getElementById("outputsList");
+      const curInputText = document.getElementById("curInputText");
+      const curVolumeText = document.getElementById("curVolumeText");
+      const activeOutputsUl = document.getElementById("activeOutputs");
+      const sessionOverlay = document.getElementById("sessionOverlay");
+      const takeOverBtn = document.getElementById("takeOverBtn");
+
+      function renderActiveOutputs() {
+        while (activeOutputsUl.firstChild) {
+          activeOutputsUl.removeChild(activeOutputsUl.firstChild);
+        }
+        currentOutputs.forEach((o) => {
+          let li = document.createElement("li");
+          li.textContent = o;
+          activeOutputsUl.appendChild(li);
+        });
+      }
+
+      // Overlay logic
+      function updateOverlay() {
+        if (isOwner) {
+          sessionOverlay.style.display = "none";
+        } else {
+          sessionOverlay.style.display = "flex";
+        }
+      }
+      takeOverBtn.addEventListener("click", () => {
+        socket.emit("user_takeover");
       });
-    }
 
-    // Socket handlers
-    socket.on('available_inputs', function(list){
-      // rebuild inputSel
-      while(inputSel.firstChild) inputSel.removeChild(inputSel.firstChild);
-      list.forEach(item=>{
-        let opt=document.createElement('option');
-        opt.value=item.id;
-        opt.textContent=item.name;
-        inputSel.appendChild(opt);
+      // Socket events
+      socket.on("available_inputs", (list) => {
+        while (inputSelect.firstChild)
+          inputSelect.removeChild(inputSelect.firstChild);
+        list.forEach((item) => {
+          const opt = document.createElement("option");
+          opt.value = item.id;
+          opt.textContent = item.name;
+          inputSelect.appendChild(opt);
+        });
+        inputSelect.value = currentInput;
       });
-      inputSel.value=currentInput;
-    });
-
-    socket.on('available_outputs', function(unified){
-      // each => {uiId, name, isStereo, devices[]}
-      while(outputsArea.firstChild) outputsArea.removeChild(outputsArea.firstChild);
-
-      unified.forEach(u=>{
-        let lb = document.createElement('label');
-        let cb = document.createElement('input');
-        cb.type='checkbox';
-        cb.value=u.uiId;
-        cb.checked=currentOutputs.includes(u.uiId);
-        cb.addEventListener('change', onOutputCheckboxChange);
-        lb.appendChild(cb);
-        lb.appendChild(document.createTextNode(u.name));
-        outputsArea.appendChild(lb);
+      socket.on("available_outputs", (unified) => {
+        while (outputsListDiv.firstChild)
+          outputsListDiv.removeChild(outputsListDiv.firstChild);
+        unified.forEach((u) => {
+          let lb = document.createElement("label");
+          let c = document.createElement("input");
+          c.type = "checkbox";
+          c.value = u.uiId;
+          c.checked = currentOutputs.includes(u.uiId);
+          c.addEventListener("change", onOutputCheckChange);
+          lb.appendChild(c);
+          lb.appendChild(document.createTextNode(u.name));
+          outputsListDiv.appendChild(lb);
+        });
+        renderActiveOutputs();
       });
-      refreshOutputsList();
-    });
-
-    socket.on('switched_input', function(val){
-      currentInput=val;
-      inputSel.value=val;
-      curInputText.textContent=val;
-    });
-    socket.on('switched_output', function(outArr){
-      if(!Array.isArray(outArr)) outArr=[outArr];
-      currentOutputs=outArr;
-      let cbs= outputsArea.querySelectorAll('input[type=checkbox]');
-      cbs.forEach(cb=>{
-        cb.checked= outArr.includes(cb.value);
+      socket.on("switched_input", (inp) => {
+        currentInput = inp;
+        inputSelect.value = inp;
+        curInputText.textContent = inp;
       });
-      refreshOutputsList();
-    });
-    socket.on('changed_output_volume', function(vol){
-      currentVolume=vol;
-      volumeEl.value=vol;
-      curVolumeText.textContent=vol;
-    });
-
-    function onOutputCheckboxChange(ev){
-      let cbs= outputsArea.querySelectorAll('input[type=checkbox]');
-      let sel=[];
-      cbs.forEach(cb=>{
-        if(cb.checked) sel.push(cb.value);
+      socket.on("switched_output", (outs) => {
+        if (!Array.isArray(outs)) outs = [outs];
+        currentOutputs = outs;
+        const allChecks = outputsListDiv.querySelectorAll(
+          "input[type=checkbox]"
+        );
+        allChecks.forEach((ch) => {
+          ch.checked = currentOutputs.includes(ch.value);
+        });
+        renderActiveOutputs();
       });
-      socket.emit('switch_output', sel);
-    }
+      socket.on("changed_output_volume", (vol) => {
+        currentVolume = vol;
+        volumeRange.value = vol;
+        curVolumeText.textContent = String(vol);
+      });
+      socket.on("sessionOwnerUpdate", (ownerId) => {
+        isOwner = socket.id === ownerId;
+        updateOverlay();
+      });
+      socket.on("sessionLostControl", () => {
+        // We are no longer the owner
+        isOwner = false;
+        updateOverlay();
+      });
 
-    // UI
-    inputSel.addEventListener('change', ev=>{
-      socket.emit('switch_input', ev.target.value);
-    });
-    volumeEl.addEventListener('input', ev=>{
-      socket.emit('change_output_volume', ev.target.value);
-    });
+      function onOutputCheckChange(e) {
+        const cbs = outputsListDiv.querySelectorAll("input[type=checkbox]");
+        const sel = [];
+        cbs.forEach((cb) => {
+          if (cb.checked) sel.push(cb.value);
+        });
+        socket.emit("switch_output", sel);
+      }
 
-  </script>
-</body>
+      inputSelect.addEventListener("change", (ev) => {
+        socket.emit("switch_input", ev.target.value);
+      });
+      volumeRange.addEventListener("input", (ev) => {
+        socket.emit("change_output_volume", ev.target.value);
+      });
+    </script>
+  </body>
 </html>
