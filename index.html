@@ -174,6 +174,8 @@
         <p>Current Volume: <span id="curVolumeText"></span></p>
         <p>Active Outputs:</p>
         <ul id="activeOutputs"></ul>
+        <p id="statusMessage" style="color: #4CAF50; margin-top: 1rem;"></p>
+        <p id="errorMessage" style="color: #f44336; margin-top: 0.5rem;"></p>
       </div>
     </div>
 
@@ -212,6 +214,29 @@
       const activeOutputsUl = document.getElementById("activeOutputs");
       const sessionOverlay = document.getElementById("sessionOverlay");
       const takeOverBtn = document.getElementById("takeOverBtn");
+      const statusMessage = document.getElementById("statusMessage");
+      const errorMessage = document.getElementById("errorMessage");
+
+      let statusTimeout = null;
+      let errorTimeout = null;
+
+      function showStatus(message, duration = 5000) {
+        statusMessage.textContent = message;
+        errorMessage.textContent = "";
+        if (statusTimeout) clearTimeout(statusTimeout);
+        statusTimeout = setTimeout(() => {
+          statusMessage.textContent = "";
+        }, duration);
+      }
+
+      function showError(message, duration = 10000) {
+        errorMessage.textContent = message;
+        statusMessage.textContent = "";
+        if (errorTimeout) clearTimeout(errorTimeout);
+        errorTimeout = setTimeout(() => {
+          errorMessage.textContent = "";
+        }, duration);
+      }
 
       function renderActiveOutputs() {
         while (activeOutputsUl.firstChild) {
@@ -284,6 +309,7 @@
         currentVolume = vol;
         volumeRange.value = vol;
         curVolumeText.textContent = String(vol);
+        updateSliderProgress(); // Fix: Update slider background when server changes volume
       });
       socket.on("sessionOwnerUpdate", (ownerId) => {
         isOwner = socket.id === ownerId;
@@ -295,20 +321,61 @@
         updateOverlay();
       });
 
+      // Add connection status handlers
+      socket.on("connect", () => {
+        showStatus("Connected to BabelPod server");
+      });
+
+      socket.on("disconnect", () => {
+        showError("Disconnected from server. Attempting to reconnect...");
+      });
+
+      socket.on("connect_error", (error) => {
+        showError("Connection error: " + error.message);
+      });
+
+      socket.on("error", (error) => {
+        showError("Socket error: " + (error.message || error));
+      });
+
+      // Server-side error reporting
+      socket.on("server_error", (data) => {
+        showError("Server error: " + data.message);
+      });
+
+      socket.on("server_status", (data) => {
+        showStatus(data.message);
+      });
+
       function onOutputCheckChange(e) {
         const cbs = outputsListDiv.querySelectorAll("input[type=checkbox]");
         const sel = [];
         cbs.forEach((cb) => {
           if (cb.checked) sel.push(cb.value);
         });
-        socket.emit("switch_output", sel);
+        
+        // Debounce output changes to prevent rapid switching
+        if (window.outputChangeTimeout) clearTimeout(window.outputChangeTimeout);
+        window.outputChangeTimeout = setTimeout(() => {
+          socket.emit("switch_output", sel);
+        }, 150);
       }
 
       inputSelect.addEventListener("change", (ev) => {
         socket.emit("switch_input", ev.target.value);
       });
+
+      // Debounce volume changes to prevent flooding the server
+      let volumeChangeTimeout = null;
       volumeRange.addEventListener("input", (ev) => {
-        socket.emit("change_output_volume", ev.target.value);
+        // Update UI immediately for smooth slider movement
+        updateSliderProgress();
+        
+        // Debounce the socket emission
+        if (volumeChangeTimeout) clearTimeout(volumeChangeTimeout);
+        volumeChangeTimeout = setTimeout(() => {
+          socket.emit("change_output_volume", ev.target.value);
+        }, 100);
       });
     </script>
   </body>
