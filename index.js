@@ -30,6 +30,7 @@ const io = new Server(server);
 // =======================
 const airtunes = new AirTunes();
 let activeLocalOutputs = [];
+let activeAirPlayDevices = []; // Track active AirPlay devices for volume control
 
 // =======================
 // 4) Fallback sink setup
@@ -282,7 +283,10 @@ function syncOutputs(newSelected) {
             ud.devices.forEach(d => {
               if (d.host && d.port) {
                 try {
-                  airtunes.stop(`${d.host}:${d.port}`);
+                  const deviceKey = `${d.host}:${d.port}`;
+                  airtunes.stop(deviceKey);
+                  // Remove from active AirPlay devices
+                  activeAirPlayDevices = activeAirPlayDevices.filter(k => k !== deviceKey);
                 } catch (e) {
                   console.error(`Error stopping AirPlay device ${d.host}:${d.port}:`, e);
                 }
@@ -333,11 +337,16 @@ function syncOutputs(newSelected) {
           ud.devices.forEach(device => {
             if (device.host && device.port) {
               try {
+                const deviceKey = `${device.host}:${device.port}`;
                 airtunes.add(device.host, {
                   port: device.port,
                   volume,
                   stereo: !!device.isStereo
                 });
+                // Track active AirPlay devices
+                if (!activeAirPlayDevices.includes(deviceKey)) {
+                  activeAirPlayDevices.push(deviceKey);
+                }
               } catch (e) {
                 console.error(`Error adding AirPlay device ${device.host}:${device.port}:`, e);
                 io.emit('server_error', { message: `AirPlay error: ${e.message}` });
@@ -351,8 +360,15 @@ function syncOutputs(newSelected) {
       }
     });
     
+    // Set volume on all active AirPlay devices
     try {
-      airtunes.setVolume("all", volume);
+      activeAirPlayDevices.forEach(deviceKey => {
+        try {
+          airtunes.setVolume(deviceKey, volume);
+        } catch (e) {
+          console.error(`Error setting volume for ${deviceKey}:`, e);
+        }
+      });
     } catch (e) {
       console.error("Error setting AirTunes volume:", e);
     }
@@ -479,7 +495,14 @@ io.on('connection', socket => {
     if (socket.id !== sessionOwner) return;
     try {
       volume = Number(vol) || 0;
-      airtunes.setVolume("all", volume);
+      // Set volume on all active AirPlay devices
+      activeAirPlayDevices.forEach(deviceKey => {
+        try {
+          airtunes.setVolume(deviceKey, volume);
+        } catch (e) {
+          console.error(`Error setting volume for ${deviceKey}:`, e);
+        }
+      });
       io.emit('changed_output_volume', volume);
     } catch (e) {
       console.error("Error changing volume:", e);
