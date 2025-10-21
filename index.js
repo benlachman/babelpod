@@ -66,6 +66,10 @@ duplicator.on('error', e => {
 // =======================
 let currentInput = "void";
 let arecordInstance = null;
+let isManualInputSwitch = false; // Track if input switch was intentional
+let inputRestartAttempts = 0;
+const MAX_INPUT_RESTART_ATTEMPTS = 3;
+const INPUT_RESTART_DELAY = 2000; // 2 seconds
 
 util.inherits(FromVoid, stream.Readable);
 function FromVoid() {
@@ -89,6 +93,89 @@ function cleanupCurrentInput() {
   } catch (e) {
     console.error("Error cleaning up input:", e);
   }
+}
+
+// Restart input device (for automatic recovery)
+function restartInputDevice(devId, delayMs = 0) {
+  if (devId === "void") return;
+  
+  setTimeout(() => {
+    console.log(`Attempting to restart input device: ${devId} (attempt ${inputRestartAttempts + 1}/${MAX_INPUT_RESTART_ATTEMPTS})`);
+    
+    try {
+      cleanupCurrentInput();
+      
+      arecordInstance = spawn("arecord", [
+        "-D", devId,
+        "-c", "2",
+        "-f", "S16_LE",
+        "-r", "44100"
+      ]);
+      
+      setupArecordHandlers(devId);
+      
+      inputStream = arecordInstance.stdout;
+      inputStream.on('error', (error) => {
+        console.error(`Error with input stream for ${devId}:`, error);
+      });
+      inputStream.pipe(duplicator);
+      
+      inputRestartAttempts++;
+      io.emit('server_status', { message: `Input device reconnected: ${devId}` });
+      console.log(`Successfully restarted input device: ${devId}`);
+    } catch (e) {
+      console.error(`Failed to restart input device ${devId}:`, e);
+      io.emit('server_error', { message: `Failed to reconnect input: ${e.message}` });
+    }
+  }, delayMs);
+}
+
+// Setup arecord process event handlers
+function setupArecordHandlers(devId) {
+  if (!arecordInstance) return;
+  
+  arecordInstance.on('error', (error) => {
+    console.error(`Error with arecord process for ${devId}:`, error);
+    io.emit('server_error', { message: `Input device error: ${error.message}` });
+  });
+  
+  arecordInstance.stderr.on('data', (data) => {
+    const msg = data.toString();
+    console.error(`arecord stderr for ${devId}:`, msg);
+    // Only report critical errors to UI
+    if (msg.includes('error') || msg.includes('failed')) {
+      io.emit('server_error', { message: `Input error: ${msg.substring(0, 100)}` });
+    }
+  });
+  
+  arecordInstance.on('exit', (code, signal) => {
+    console.log(`arecord exited for ${devId} - code: ${code}, signal: ${signal}, manual: ${isManualInputSwitch}`);
+    
+    // Only attempt restart if:
+    // 1. Exit was unexpected (non-zero code or killed by signal)
+    // 2. It wasn't a manual input switch
+    // 3. We haven't exceeded retry attempts
+    // 4. The current input is still this device
+    if (!isManualInputSwitch && currentInput === devId) {
+      if (code !== 0 || signal) {
+        console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
+        io.emit('server_error', { message: `Input device disconnected - attempting to reconnect...` });
+        
+        if (inputRestartAttempts < MAX_INPUT_RESTART_ATTEMPTS) {
+          restartInputDevice(devId, INPUT_RESTART_DELAY);
+        } else {
+          console.error(`Max restart attempts (${MAX_INPUT_RESTART_ATTEMPTS}) reached for ${devId}`);
+          io.emit('server_error', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} reconnection attempts. Please reselect the input.` });
+          inputRestartAttempts = 0; // Reset for next manual selection
+        }
+      }
+    }
+    
+    // Reset flag after handling exit
+    if (isManualInputSwitch) {
+      isManualInputSwitch = false;
+    }
+  });
 }
 
 // =======================
@@ -425,8 +512,13 @@ io.on('connection', socket => {
     if (socket.id !== sessionOwner) return;
     
     try {
+      // Mark this as a manual switch to prevent auto-restart
+      isManualInputSwitch = true;
+      inputRestartAttempts = 0; // Reset restart counter on manual switch
+      
       cleanupCurrentInput();
       currentInput = devId;
+      
       if (devId === "void") {
         inputStream = new FromVoid();
         inputStream.pipe(duplicator);
@@ -438,27 +530,8 @@ io.on('connection', socket => {
           "-r", "44100"
         ]);
         
-        // Handle arecord errors
-        arecordInstance.on('error', (error) => {
-          console.error(`Error with arecord process for ${devId}:`, error);
-          io.emit('server_error', { message: `Input device error: ${error.message}` });
-        });
-        
-        arecordInstance.stderr.on('data', (data) => {
-          const msg = data.toString();
-          console.error(`arecord stderr for ${devId}:`, msg);
-          // Only report critical errors to UI
-          if (msg.includes('error') || msg.includes('failed')) {
-            io.emit('server_error', { message: `Input error: ${msg.substring(0, 100)}` });
-          }
-        });
-        
-        arecordInstance.on('exit', (code, signal) => {
-          if (code !== 0 && code !== null) {
-            console.error(`arecord exited with code ${code} for ${devId}`);
-            io.emit('server_error', { message: `Input device stopped unexpectedly` });
-          }
-        });
+        // Setup all event handlers
+        setupArecordHandlers(devId);
         
         inputStream = arecordInstance.stdout;
         inputStream.on('error', (error) => {
@@ -466,6 +539,7 @@ io.on('connection', socket => {
         });
         inputStream.pipe(duplicator);
       }
+      
       io.emit('switched_input', currentInput);
       io.emit('server_status', { message: `Input switched to ${currentInput}` });
     } catch (e) {

@@ -3,6 +3,32 @@
 ## Overview
 This PR addresses all issues raised in the original issue: adds tests, fixes UI bugs, improves reliability, and includes a comprehensive code review.
 
+## Latest Update: Automatic Input Recovery (Dec 2024)
+
+### Problem
+Service would stop broadcasting audio after a few hours of idle time. The arecord process capturing USB audio would crash or lose connection, but the service wouldn't attempt to recover, requiring a manual restart.
+
+### Solution
+Implemented automatic input device recovery with retry logic:
+
+```javascript
+// Automatic restart on unexpected exit
+- Detects when arecord exits unexpectedly (non-zero exit code or signal)
+- Distinguishes between manual input switches and crashes
+- Attempts up to 3 automatic reconnection attempts with 2-second delays
+- Provides clear user feedback during reconnection attempts
+- Resets retry counter on successful manual input selection
+```
+
+**Key Features:**
+- Automatic reconnection when USB audio device disconnects
+- Prevents restart loops during manual input switching
+- User-visible status messages: "Input device disconnected - attempting to reconnect..."
+- Success notification: "Input device reconnected: [device]"
+- Failure notification after max attempts: "Input device failed after 3 reconnection attempts. Please reselect the input."
+
+This fixes the issue where the service would silently stop working after USB connection loss, requiring a full Raspberry Pi restart.
+
 ## Key Changes
 
 ### 1. UI Bug Fixes
