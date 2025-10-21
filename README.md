@@ -84,6 +84,24 @@ or if you have nodemon:
     •	mDNS scanning logs can be checked if needed: watch for “update” events or data.txt.
     •	If audio is silent, confirm volumes, passcodes, or if your device demands a pin. Check if any firewall blocks UDP traffic.
 
+### Error Handling & Reliability
+
+BabelPod now includes comprehensive error handling to prevent crashes and provide better visibility:
+
+- **UI Error Messages**: The web interface displays error and status messages so you can see what's happening without checking server logs.
+- **Process Error Handling**: The server won't crash if `arecord` or `aplay` processes fail - errors are logged and reported to the UI.
+- **Network Resilience**: AirPlay connection errors and mDNS issues are handled gracefully.
+- **Graceful Shutdown**: Clean shutdown on Ctrl+C (SIGINT) or SIGTERM properly stops all audio processes.
+
+### Testing
+
+See [TESTING.md](TESTING.md) for a comprehensive testing guide including manual test checklists and expected behavior documentation.
+
+Run unit tests with:
+```bash
+npm test
+```
+
 ## Contributing
 
 Please open issues or PRs for improvements or bugfixes.

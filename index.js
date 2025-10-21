@@ -30,6 +30,7 @@ const io = new Server(server);
 // =======================
 const airtunes = new AirTunes();
 let activeLocalOutputs = [];
+let activeAirPlayDevices = []; // Track active AirPlay devices for volume control
 
 // =======================
 // 4) Fallback sink setup
@@ -51,7 +52,13 @@ const fallbackSink = new DiscardSink();
 const duplicator = new stream.PassThrough({ highWaterMark: 65536 });
 duplicator.pipe(fallbackSink);
 duplicator.pipe(airtunes).on('error', e => {
-  console.log("AirTunes piping error:", e);
+  console.error("AirTunes piping error:", e);
+  // Don't crash on AirTunes errors
+});
+
+// Handle duplicator errors
+duplicator.on('error', e => {
+  console.error("Duplicator stream error:", e);
 });
 
 // =======================
@@ -59,6 +66,10 @@ duplicator.pipe(airtunes).on('error', e => {
 // =======================
 let currentInput = "void";
 let arecordInstance = null;
+let isManualInputSwitch = false; // Track if input switch was intentional
+let inputRestartAttempts = 0;
+const MAX_INPUT_RESTART_ATTEMPTS = 3;
+const INPUT_RESTART_DELAY = 2000; // 2 seconds
 
 util.inherits(FromVoid, stream.Readable);
 function FromVoid() {
@@ -71,13 +82,100 @@ inputStream.pipe(duplicator);
 
 // Clean up current input, stop processes
 function cleanupCurrentInput() {
-  if (inputStream) {
-    inputStream.unpipe(duplicator);
+  try {
+    if (inputStream) {
+      inputStream.unpipe(duplicator);
+    }
+    if (arecordInstance) {
+      arecordInstance.kill();
+      arecordInstance = null;
+    }
+  } catch (e) {
+    console.error("Error cleaning up input:", e);
   }
-  if (arecordInstance) {
-    arecordInstance.kill();
-    arecordInstance = null;
-  }
+}
+
+// Restart input device (for automatic recovery)
+function restartInputDevice(devId, delayMs = 0) {
+  if (devId === "void") return;
+  
+  setTimeout(() => {
+    console.log(`Attempting to restart input device: ${devId} (attempt ${inputRestartAttempts + 1}/${MAX_INPUT_RESTART_ATTEMPTS})`);
+    
+    try {
+      cleanupCurrentInput();
+      
+      arecordInstance = spawn("arecord", [
+        "-D", devId,
+        "-c", "2",
+        "-f", "S16_LE",
+        "-r", "44100"
+      ]);
+      
+      setupArecordHandlers(devId);
+      
+      inputStream = arecordInstance.stdout;
+      inputStream.on('error', (error) => {
+        console.error(`Error with input stream for ${devId}:`, error);
+      });
+      inputStream.pipe(duplicator);
+      
+      inputRestartAttempts++;
+      io.emit('server_status', { message: `Input device reconnected: ${devId}` });
+      console.log(`Successfully restarted input device: ${devId}`);
+    } catch (e) {
+      console.error(`Failed to restart input device ${devId}:`, e);
+      io.emit('server_error', { message: `Failed to reconnect input: ${e.message}` });
+    }
+  }, delayMs);
+}
+
+// Setup arecord process event handlers
+function setupArecordHandlers(devId) {
+  if (!arecordInstance) return;
+  
+  arecordInstance.on('error', (error) => {
+    console.error(`Error with arecord process for ${devId}:`, error);
+    io.emit('server_error', { message: `Input device error: ${error.message}` });
+  });
+  
+  arecordInstance.stderr.on('data', (data) => {
+    const msg = data.toString();
+    console.error(`arecord stderr for ${devId}:`, msg);
+    // Only report critical errors to UI
+    if (msg.includes('error') || msg.includes('failed')) {
+      io.emit('server_error', { message: `Input error: ${msg.substring(0, 100)}` });
+    }
+  });
+  
+  arecordInstance.on('exit', (code, signal) => {
+    console.log(`arecord exited for ${devId} - code: ${code}, signal: ${signal}, manual: ${isManualInputSwitch}`);
+    
+    // Only attempt restart if:
+    // 1. Exit was unexpected (non-zero code or killed by signal)
+    // 2. It wasn't a manual input switch
+    // 3. We haven't exceeded retry attempts
+    // 4. The current input is still this device
+    if (!isManualInputSwitch && currentInput === devId) {
+      if (code !== 0 || signal) {
+        console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
+        io.emit('server_error', { message: `Input device disconnected - attempting to reconnect...` });
+        
+        if (inputRestartAttempts < MAX_INPUT_RESTART_ATTEMPTS) {
+          restartInputDevice(devId, INPUT_RESTART_DELAY);
+        } else {
+          console.error(`Max restart attempts (${MAX_INPUT_RESTART_ATTEMPTS}) reached for ${devId}`);
+          io.emit('server_error', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} reconnection attempts. Please reselect the input.` });
+          inputRestartAttempts = 0; // Reset for next manual selection
+        }
+      }
+    }
+    
+    // Reset flag after handling exit
+    if (isManualInputSwitch) {
+      isManualInputSwitch = false;
+    }
+  });
 }
 
 // =======================
@@ -88,7 +186,7 @@ let selectedOutputs = [];
 
 let availablePcmOutputs = [];
 let availablePcmInputs = [];
-let availableBluetoothInputs = [];
+let availableBluetoothInputs = []; // TODO: Bluetooth input discovery not yet implemented
 let availableAirplayOutputs = [];
 let unifiedOutputs = [];
 
@@ -111,7 +209,8 @@ function scanPcmDevices() {
     availablePcmOutputs = all.filter(d => d.output);
     availablePcmInputs = all.filter(d => d.input);
   } catch (e) {
-    console.log("Error scanning /proc/asound/pcm:", e);
+    console.error("Error scanning /proc/asound/pcm:", e);
+    // Don't crash - just log and continue with empty lists
   }
 }
 
@@ -189,22 +288,31 @@ browser.on('ready', () => {
   browser.discover();
 });
 browser.on('update', data => {
-  if (!data.fullname) return;
-  const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
-  if (match && match.length > 1) {
-    const address = data.addresses[0];
-    const port = data.port;
-    const st = data.txt.find(t => t.startsWith('gpn='))?.slice(4) || null;
-    if (!availableAirplayOutputs.some(o => o.host === address && o.port === port)) {
-      availableAirplayOutputs.push({
-        name: match[1],
-        stereo: st,
-        host: address,
-        port
-      });
-      updateAllOutputs();
+  try {
+    if (!data.fullname) return;
+    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
+    if (match && match.length > 1) {
+      const address = data.addresses[0];
+      const port = data.port;
+      const st = data.txt.find(t => t.startsWith('gpn='))?.slice(4) || null;
+      if (!availableAirplayOutputs.some(o => o.host === address && o.port === port)) {
+        availableAirplayOutputs.push({
+          name: match[1],
+          stereo: st,
+          host: address,
+          port
+        });
+        updateAllOutputs();
+      }
     }
+  } catch (e) {
+    console.error("Error processing mDNS update:", e);
   }
+});
+
+browser.on('error', (error) => {
+  console.error("mDNS browser error:", error);
+  // Continue operating even if mDNS has issues
 });
 
 // ============ Advertise BabelPod service
@@ -233,62 +341,128 @@ advertiseService();
 //    (add/remove from duplicator)
 // =======================
 function syncOutputs(newSelected) {
-  const old = selectedOutputs.slice();
-  selectedOutputs = newSelected.slice();
+  try {
+    const old = selectedOutputs.slice();
+    selectedOutputs = newSelected.slice();
 
-  const removed = old.filter(r => !selectedOutputs.includes(r));
-  const added = selectedOutputs.filter(a => !old.includes(a));
+    const removed = old.filter(r => !selectedOutputs.includes(r));
+    const added = selectedOutputs.filter(a => !old.includes(a));
 
-  // Remove old outputs
-  removed.forEach(rid => {
-    if (rid.startsWith("plughw:")) {
-      for (let i = activeLocalOutputs.length - 1; i >= 0; i--) {
-        if (activeLocalOutputs[i].id === rid) {
-          const p = activeLocalOutputs[i];
-          duplicator.unpipe(p.process.stdin);
-          p.process.kill();
-          activeLocalOutputs.splice(i, 1);
-        }
-      }
-    } else if (rid.startsWith("air:") || rid.startsWith("airpair:")) {
-      const ud = unifiedOutputs.find(u => u.uiId === rid);
-      if (ud) {
-        ud.devices.forEach(d => {
-          if (d.host && d.port) {
-            airtunes.stop(`${d.host}:${d.port}`);
+    // Remove old outputs
+    removed.forEach(rid => {
+      try {
+        if (rid.startsWith("plughw:")) {
+          for (let i = activeLocalOutputs.length - 1; i >= 0; i--) {
+            if (activeLocalOutputs[i].id === rid) {
+              const p = activeLocalOutputs[i];
+              try {
+                duplicator.unpipe(p.process.stdin);
+                p.process.kill();
+              } catch (e) {
+                console.error(`Error stopping local output ${rid}:`, e);
+              }
+              activeLocalOutputs.splice(i, 1);
+            }
           }
-        });
+        } else if (rid.startsWith("air:") || rid.startsWith("airpair:")) {
+          const ud = unifiedOutputs.find(u => u.uiId === rid);
+          if (ud) {
+            ud.devices.forEach(d => {
+              if (d.host && d.port) {
+                try {
+                  const deviceKey = `${d.host}:${d.port}`;
+                  airtunes.stop(deviceKey);
+                  // Remove from active AirPlay devices
+                  activeAirPlayDevices = activeAirPlayDevices.filter(k => k !== deviceKey);
+                } catch (e) {
+                  console.error(`Error stopping AirPlay device ${d.host}:${d.port}:`, e);
+                }
+              }
+            });
+          }
+        }
+      } catch (e) {
+        console.error(`Error removing output ${rid}:`, e);
       }
-    }
-  });
+    });
 
-  // Add new outputs
-  added.forEach(aid => {
-    if (aid === "void") return;
-    if (aid.startsWith("plughw:")) {
-      const child = spawn("aplay", [
-        "-D", aid,
-        "-c", "2",
-        "-f", "S16_LE",
-        "-r", "44100"
-      ]);
-      duplicator.pipe(child.stdin);
-      activeLocalOutputs.push({ id: aid, process: child });
-    } else if (aid.startsWith("air:") || aid.startsWith("airpair:")) {
-      const ud = unifiedOutputs.find(u => u.uiId === aid);
-      if (!ud) return;
-      ud.devices.forEach(device => {
-        if (device.host && device.port) {
-          airtunes.add(device.host, {
-            port: device.port,
-            volume,
-            stereo: !!device.isStereo
+    // Add new outputs
+    added.forEach(aid => {
+      try {
+        if (aid === "void") return;
+        if (aid.startsWith("plughw:")) {
+          const child = spawn("aplay", [
+            "-D", aid,
+            "-c", "2",
+            "-f", "S16_LE",
+            "-r", "44100"
+          ]);
+          
+          // Handle child process errors
+          child.on('error', (error) => {
+            console.error(`Error with aplay process for ${aid}:`, error);
+            io.emit('server_error', { message: `Local output error: ${error.message}` });
+          });
+          
+          child.stderr.on('data', (data) => {
+            console.error(`aplay stderr for ${aid}:`, data.toString());
+          });
+          
+          child.on('exit', (code, signal) => {
+            if (code !== 0 && code !== null) {
+              console.error(`aplay exited with code ${code} for ${aid}`);
+            }
+          });
+          
+          duplicator.pipe(child.stdin).on('error', (e) => {
+            console.error(`Error piping to local output ${aid}:`, e);
+          });
+          activeLocalOutputs.push({ id: aid, process: child });
+        } else if (aid.startsWith("air:") || aid.startsWith("airpair:")) {
+          const ud = unifiedOutputs.find(u => u.uiId === aid);
+          if (!ud) return;
+          ud.devices.forEach(device => {
+            if (device.host && device.port) {
+              try {
+                const deviceKey = `${device.host}:${device.port}`;
+                airtunes.add(device.host, {
+                  port: device.port,
+                  volume,
+                  stereo: !!device.isStereo
+                });
+                // Track active AirPlay devices
+                if (!activeAirPlayDevices.includes(deviceKey)) {
+                  activeAirPlayDevices.push(deviceKey);
+                }
+              } catch (e) {
+                console.error(`Error adding AirPlay device ${device.host}:${device.port}:`, e);
+                io.emit('server_error', { message: `AirPlay error: ${e.message}` });
+              }
+            }
           });
         }
+      } catch (e) {
+        console.error(`Error adding output ${aid}:`, e);
+        io.emit('server_error', { message: `Error adding output: ${e.message}` });
+      }
+    });
+    
+    // Set volume on all active AirPlay devices
+    try {
+      activeAirPlayDevices.forEach(deviceKey => {
+        try {
+          airtunes.setVolume(deviceKey, volume);
+        } catch (e) {
+          console.error(`Error setting volume for ${deviceKey}:`, e);
+        }
       });
+    } catch (e) {
+      console.error("Error setting AirTunes volume:", e);
     }
-  });
-  airtunes.setVolume("all", volume);
+  } catch (e) {
+    console.error("Error in syncOutputs:", e);
+    io.emit('server_error', { message: `Output sync error: ${e.message}` });
+  }
 }
 
 // =======================
@@ -336,40 +510,78 @@ io.on('connection', socket => {
     console.log("Switching input to:", devId);
 
     if (socket.id !== sessionOwner) return;
-    cleanupCurrentInput();
-    currentInput = devId;
-    if (devId === "void") {
-      inputStream = new FromVoid();
-      inputStream.pipe(duplicator);
-    } else {
-      arecordInstance = spawn("arecord", [
-        "-D", devId,
-        "-c", "2",
-        "-f", "S16_LE",
-        "-r", "44100"
-      ]);
-      inputStream = arecordInstance.stdout;
-      inputStream.pipe(duplicator);
+    
+    try {
+      // Mark this as a manual switch to prevent auto-restart
+      isManualInputSwitch = true;
+      inputRestartAttempts = 0; // Reset restart counter on manual switch
+      
+      cleanupCurrentInput();
+      currentInput = devId;
+      
+      if (devId === "void") {
+        inputStream = new FromVoid();
+        inputStream.pipe(duplicator);
+      } else {
+        arecordInstance = spawn("arecord", [
+          "-D", devId,
+          "-c", "2",
+          "-f", "S16_LE",
+          "-r", "44100"
+        ]);
+        
+        // Setup all event handlers
+        setupArecordHandlers(devId);
+        
+        inputStream = arecordInstance.stdout;
+        inputStream.on('error', (error) => {
+          console.error(`Error with input stream for ${devId}:`, error);
+        });
+        inputStream.pipe(duplicator);
+      }
+      
+      io.emit('switched_input', currentInput);
+      io.emit('server_status', { message: `Input switched to ${currentInput}` });
+    } catch (e) {
+      console.error("Error switching input:", e);
+      io.emit('server_error', { message: `Failed to switch input: ${e.message}` });
     }
-    io.emit('switched_input', currentInput);
   });
 
   socket.on('switch_output', (outs) => {
     console.log("Switching output to:", outs);
 
     if (socket.id !== sessionOwner) return;
-    if (!Array.isArray(outs)) outs = [outs];
-    syncOutputs(outs);
-    io.emit('switched_output', outs);
+    try {
+      if (!Array.isArray(outs)) outs = [outs];
+      syncOutputs(outs);
+      io.emit('switched_output', outs);
+      io.emit('server_status', { message: `Outputs updated` });
+    } catch (e) {
+      console.error("Error switching output:", e);
+      io.emit('server_error', { message: `Failed to switch output: ${e.message}` });
+    }
   });
 
   socket.on('change_output_volume', (vol) => {
     console.log("Changing output volume to:", vol);
 
     if (socket.id !== sessionOwner) return;
-    volume = Number(vol) || 0;
-    airtunes.setVolume("all", volume);
-    io.emit('changed_output_volume', volume);
+    try {
+      volume = Number(vol) || 0;
+      // Set volume on all active AirPlay devices
+      activeAirPlayDevices.forEach(deviceKey => {
+        try {
+          airtunes.setVolume(deviceKey, volume);
+        } catch (e) {
+          console.error(`Error setting volume for ${deviceKey}:`, e);
+        }
+      });
+      io.emit('changed_output_volume', volume);
+    } catch (e) {
+      console.error("Error changing volume:", e);
+      io.emit('server_error', { message: `Failed to change volume: ${e.message}` });
+    }
   });
 
   socket.on('disconnect', () => {
@@ -387,4 +599,45 @@ io.on('connection', socket => {
 let PORT = process.env.BABEL_PORT || 3000;
 server.listen(PORT, () => {
   console.log("Babelpod listening on port:", PORT);
+});
+
+// =======================
+// 13) Global error handlers
+// =======================
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  io.emit('server_error', { message: 'Server encountered an unexpected error' });
+  // Don't exit - try to recover
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  io.emit('server_error', { message: 'Server encountered an unexpected error' });
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log("\nShutting down gracefully...");
+  cleanupCurrentInput();
+  activeLocalOutputs.forEach(o => {
+    try {
+      o.process.kill();
+    } catch (e) {
+      console.error("Error killing local output:", e);
+    }
+  });
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  console.log("\nShutting down gracefully...");
+  cleanupCurrentInput();
+  activeLocalOutputs.forEach(o => {
+    try {
+      o.process.kill();
+    } catch (e) {
+      console.error("Error killing local output:", e);
+    }
+  });
+  process.exit(0);
 });

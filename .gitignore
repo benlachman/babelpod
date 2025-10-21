@@ -2,3 +2,6 @@ node_modules
 build/node_gyp_bins/python3
 package-lock.json
 build/config.gypi
+coverage
+.nyc_output
+*.log
