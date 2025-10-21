@@ -285,14 +285,14 @@ function updateAllInputs() {
   io.emit('available_inputs', finalIn);
 }
 
-// Initial device scan - only if PCM is enabled via env variable
-// Set PCM=1 to enable PCM input/output device scanning
-if (process.env.PCM) {
-  console.log("PCM device scanning enabled via PCM environment variable");
+// Initial device scan - PCM enabled by default
+// Set DISABLE_PCM=1 to disable PCM input/output device scanning for better performance
+if (!process.env.DISABLE_PCM) {
+  console.log("PCM device scanning enabled");
   scanPcmDevices();
   setInterval(scanPcmDevices, 10000);
 } else {
-  console.log("PCM device scanning disabled. Set PCM=1 environment variable to enable.");
+  console.log("PCM device scanning disabled via DISABLE_PCM environment variable");
 }
 
 // =======================

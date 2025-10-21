@@ -31,12 +31,12 @@ bluetoothctl
 ```
 
 #### 3. Optional PCM Device Scanning
-- **Performance improvement**: PCM scanning now disabled by default
-- **Environment variable control**: Set `PCM=1` to enable PCM device scanning
+- **Default behavior**: PCM scanning is now enabled by default for backward compatibility
+- **Environment variable control**: Set `DISABLE_PCM=1` to disable PCM device scanning
 - **Use case**: Ideal for systems that only use Bluetooth or don't have ALSA hardware
 
-**Before:** Always scanned /proc/asound/pcm every 10 seconds  
-**After:** Only scans when `PCM=1` environment variable is set
+**Default:** Scans /proc/asound/pcm every 10 seconds  
+**With DISABLE_PCM=1:** Skips PCM scanning for better performance
 
 #### 4. Improved AirPlay Streaming Stability
 - **Pipe option**: Added `{end: false}` to airtunes pipe for better stability
@@ -55,7 +55,7 @@ bluetoothctl
 
 ### Tests Added
 New test suites covering the merged functionality:
-- PCM environment variable behavior
+- PCM environment variable behavior (enabled by default, can be disabled)
 - Bluetooth device ID formatting and connection tracking
 - mDNS service event handling (serviceUp, serviceChanged, serviceDown)
 - AirPlay device regex patterns
@@ -66,16 +66,18 @@ New test suites covering the merged functionality:
 
 ### Breaking Changes
 **None** - All changes are backward compatible:
-- PCM still works (just needs `PCM=1` env var)
+- PCM works by default (set `DISABLE_PCM=1` to disable if not needed)
 - Existing AirPlay devices continue to work
 - No changes to the UI or user-facing behavior
 - Bluetooth is optional (gracefully handles missing bluetoothctl module)
 
 ### Migration Guide
-If you were using PCM devices before this update:
+PCM devices work by default with no configuration needed. 
+
+If you don't use PCM devices and want better performance:
 ```bash
-# Add PCM=1 to enable PCM device scanning
-PCM=1 node index.js
+# Disable PCM device scanning for systems without ALSA
+DISABLE_PCM=1 node index.js
 ```
 
 For new Bluetooth support:

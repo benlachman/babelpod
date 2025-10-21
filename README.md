@@ -11,7 +11,7 @@ BabelPod is a lightweight Node.js application that captures audio from a selecte
 - Stream to multiple outputs in parallel (local or AirPlay).
 - Automatic discovery of AirPlay devices via mDNS with support for stereo paired HomePods.
 - Bluetooth input support for wireless audio streaming.
-- Optional PCM device scanning (can be disabled for better performance).
+- Optional PCM device scanning (can be disabled for better performance on systems that don't use ALSA devices).
 - Enhanced mDNS service handling for dynamic IP address changes.
 - Simple UI served by Express + Socket.IO.
 
@@ -21,7 +21,7 @@ BabelPod is a lightweight Node.js application that captures audio from a selecte
 - `arecord` and `aplay` installed (often in `alsa-utils` package on Linux).
 - On macOS, `sox` or other tools might be needed for capturing audio, but this is primarily tested on Linux.
 - **Optional:** For Bluetooth input support, install `bluetoothctl` and pair your Bluetooth audio devices.
-- **Optional:** For PCM device support, ensure your ALSA devices are properly configured.
+- **Optional:** For PCM device support, ensure your ALSA devices are properly configured. PCM scanning is enabled by default.
 
 ## Installation & Setup
 
@@ -52,12 +52,12 @@ If you have trouble building airtunes2, ensure:
 
 BabelPod supports the following environment variables for configuration:
 
-- **`PCM=1`**: Enable PCM device scanning. By default, PCM scanning is disabled for better performance. Set this to `1` if you want to use ALSA PCM input/output devices.
+- **`DISABLE_PCM=1`**: Disable PCM device scanning. By default, PCM scanning is enabled. Set this to `1` if you don't use ALSA PCM input/output devices and want better performance.
 - **`BABEL_PORT=3000`**: Set the HTTP server port (default: 3000).
 
 Example:
 ```bash
-PCM=1 node index.js
+DISABLE_PCM=1 node index.js
 ```
 
 ### Starting the Server

@@ -43,18 +43,17 @@ describe('BabelPod Utility Functions', () => {
   });
 
   describe('PCM Environment Variable Control', () => {
-    test('should disable PCM scanning when PCM env var is not set', () => {
-      // PCM scanning should be disabled by default
-      // This prevents unnecessary /proc/asound/pcm reads
-      expect(process.env.PCM).toBeUndefined();
+    test('should enable PCM scanning by default when DISABLE_PCM env var is not set', () => {
+      // PCM scanning should be enabled by default
+      expect(process.env.DISABLE_PCM).toBeUndefined();
     });
 
-    test('should enable PCM scanning when PCM env var is set', () => {
-      // When PCM=1, the system should scan for PCM devices
-      const originalPCM = process.env.PCM;
-      process.env.PCM = '1';
-      expect(process.env.PCM).toBe('1');
-      process.env.PCM = originalPCM;
+    test('should disable PCM scanning when DISABLE_PCM env var is set', () => {
+      // When DISABLE_PCM=1, the system should skip PCM device scanning
+      const originalDisablePCM = process.env.DISABLE_PCM;
+      process.env.DISABLE_PCM = '1';
+      expect(process.env.DISABLE_PCM).toBe('1');
+      process.env.DISABLE_PCM = originalDisablePCM;
     });
   });
 
