@@ -13,7 +13,9 @@
     ]
   },
   "dependencies": {
-    "airtunes2": "ciderapp/node_airtunes2",
+    "airtunes2": "ciderapp/node_airtunes2#v2.4.9",
+    "bluetoothctl": "https://github.com/DerDaku/node-bluetoothctl.git",
+    "dnssd2": "^1.0.0",
     "express": "^4.17.1",
     "mdns-js": "^1.0.3",
     "socket.io": "^4.8.1"
