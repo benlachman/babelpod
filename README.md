@@ -150,29 +150,14 @@ sudo systemctl start babelpod
   sudo systemctl status babelpod
   ```
 
-- View service logs (last 20 lines, then follow):
-  ```bash
-  sudo journalctl -u babelpod -n 20 -f
-  ```
-
-- View service logs only:
+- View service logs:
   ```bash
   sudo journalctl -u babelpod
   ```
-
-- Stop the service:
+  
+  Or to follow logs in real-time (showing last 20 lines):
   ```bash
-  sudo systemctl stop babelpod
-  ```
-
-- Restart the service:
-  ```bash
-  sudo systemctl restart babelpod
-  ```
-
-- Disable the service from starting on boot:
-  ```bash
-  sudo systemctl disable babelpod
+  sudo journalctl -u babelpod -n 20 -f
   ```
 
 ### Testing
