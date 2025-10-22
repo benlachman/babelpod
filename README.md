@@ -74,6 +74,47 @@ or if you have nodemon:
 3. Select an input device from the dropdown. If using a microphone or USB interface, choose the correct `plughw:{...}`. For Bluetooth devices, they will appear as "Bluetooth: [device name]".
 4. Adjust volume and choose outputs. You can select multiple AirPlay or local outputs simultaneously.
 
+### Pairing Bluetooth Devices
+
+To use Bluetooth audio devices as input sources, you'll need to pair them first using `bluetoothctl`:
+
+1. **Install Bluetooth tools** (if not already installed):
+```bash
+sudo apt-get install bluez
+```
+
+2. **Start bluetoothctl**:
+```bash
+bluetoothctl
+```
+
+3. **Enable the Bluetooth agent and scan for devices**:
+```
+power on
+agent on
+default-agent
+scan on
+```
+
+4. **Wait for your device to appear** in the scan results. You'll see something like:
+```
+[NEW] Device AA:BB:CC:DD:EE:FF My Bluetooth Speaker
+```
+
+5. **Pair with the device** using its MAC address:
+```
+pair AA:BB:CC:DD:EE:FF
+trust AA:BB:CC:DD:EE:FF
+connect AA:BB:CC:DD:EE:FF
+```
+
+6. **Exit bluetoothctl**:
+```
+exit
+```
+
+Once paired and trusted, the Bluetooth device will appear in BabelPod's input device list as "Bluetooth: [device name]". BabelPod will automatically connect to the device when you select it as an input source.
+
 ### Verifying Audio
 
 1. Manual **arecord** test
