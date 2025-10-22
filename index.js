@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const stream = require('stream');
 const util = require('util');
-const spawn = require('child_process').spawn;
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
@@ -100,11 +100,49 @@ function cleanupCurrentInput() {
       inputStream.unpipe(duplicator);
     }
     if (arecordInstance) {
-      arecordInstance.kill();
+      try {
+        // Try graceful termination first
+        arecordInstance.kill('SIGTERM');
+        // If process doesn't die, force kill after a short delay
+        setTimeout(() => {
+          if (arecordInstance && !arecordInstance.killed) {
+            console.log('arecord did not terminate gracefully, force killing...');
+            arecordInstance.kill('SIGKILL');
+          }
+        }, 100);
+      } catch (e) {
+        console.error("Error killing arecord instance:", e);
+      }
       arecordInstance = null;
     }
   } catch (e) {
     console.error("Error cleaning up input:", e);
+  }
+}
+
+// Kill any orphaned arecord processes for the specified device
+function killOrphanedArecord(devId) {
+  if (devId === "void" || !devId) return;
+  
+  try {
+    // Use pkill to find and kill any arecord processes using this device
+    // First, try to find if there are any arecord processes for this device
+    try {
+      const result = execSync(`pgrep -f "arecord.*${devId}"`, { encoding: 'utf8' }).trim();
+      if (result) {
+        console.log(`Found orphaned arecord processes for ${devId}, terminating: ${result}`);
+        // Kill them with SIGKILL to ensure they die
+        execSync(`pkill -9 -f "arecord.*${devId}"`);
+        console.log(`Killed orphaned arecord processes for ${devId}`);
+      }
+    } catch (e) {
+      // pgrep returns non-zero exit code if no processes found, which is fine
+      if (e.status !== 1) {
+        console.error(`Error checking for orphaned arecord processes: ${e.message}`);
+      }
+    }
+  } catch (e) {
+    console.error(`Error in killOrphanedArecord: ${e.message}`);
   }
 }
 
@@ -114,6 +152,9 @@ function startArecordForDevice(devId, isRetry = false) {
   
   try {
     console.log(`Starting arecord for device: ${devId}${isRetry ? ' (retry)' : ''}`);
+    
+    // Kill any orphaned arecord processes before starting a new one
+    killOrphanedArecord(devId);
     
     arecordInstance = spawn("arecord", [
       "-D", devId,
