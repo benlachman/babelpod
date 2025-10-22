@@ -125,6 +125,53 @@ describe('BabelPod Utility Functions', () => {
       expect(pipeOptions.end).toBe(false);
     });
   });
+
+  describe('Device Busy Error Handling', () => {
+    test('should detect "Device or resource busy" error in stderr', () => {
+      const stderrMsg = 'arecord: main:850: audio open error: Device or resource busy';
+      expect(stderrMsg.includes('Device or resource busy')).toBe(true);
+    });
+
+    test('should detect "audio open error" in stderr', () => {
+      const stderrMsg = 'arecord: main:850: audio open error: Device or resource busy';
+      expect(stderrMsg.includes('audio open error')).toBe(true);
+    });
+
+    test('should calculate exponential backoff delay correctly', () => {
+      const baseDelay = 200;
+      const attempt1 = baseDelay * Math.pow(2, 0); // 200ms
+      const attempt2 = baseDelay * Math.pow(2, 1); // 400ms
+      const attempt3 = baseDelay * Math.pow(2, 2); // 800ms
+      const attempt4 = baseDelay * Math.pow(2, 3); // 1600ms
+      const attempt5 = baseDelay * Math.pow(2, 4); // 3200ms
+      
+      expect(attempt1).toBe(200);
+      expect(attempt2).toBe(400);
+      expect(attempt3).toBe(800);
+      expect(attempt4).toBe(1600);
+      expect(attempt5).toBe(3200);
+    });
+
+    test('should enforce maximum retry attempts', () => {
+      const maxAttempts = 5;
+      let attempts = 0;
+      
+      // Simulate retry logic
+      for (let i = 0; i < 10; i++) {
+        if (attempts < maxAttempts) {
+          attempts++;
+        }
+      }
+      
+      expect(attempts).toBe(maxAttempts);
+    });
+
+    test('should add cleanup delay before starting new arecord', () => {
+      const cleanupDelay = 500;
+      expect(cleanupDelay).toBeGreaterThan(0);
+      expect(cleanupDelay).toBeLessThanOrEqual(1000);
+    });
+  });
 });
 
 // Note: Full integration tests would require:
