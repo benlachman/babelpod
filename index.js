@@ -15,8 +15,17 @@ const util = require('util');
 const spawn = require('child_process').spawn;
 const fs = require('fs');
 const mdns = require('mdns-js');
+const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
+
+// Bluetooth support - optional, may not be available on all systems
+let blue = null;
+try {
+  blue = require('bluetoothctl');
+} catch (e) {
+  console.log("Bluetooth support not available (bluetoothctl module not found)");
+}
 
 // =======================
 // 2) Basic server setup
@@ -51,7 +60,7 @@ const fallbackSink = new DiscardSink();
 // =======================
 const duplicator = new stream.PassThrough({ highWaterMark: 65536 });
 duplicator.pipe(fallbackSink);
-duplicator.pipe(airtunes).on('error', e => {
+duplicator.pipe(airtunes, { end: false }).on('error', e => {
   console.error("AirTunes piping error:", e);
   // Don't crash on AirTunes errors
 });
@@ -276,25 +285,61 @@ function updateAllInputs() {
   io.emit('available_inputs', finalIn);
 }
 
-// Initial device scan
-scanPcmDevices();
-setInterval(scanPcmDevices, 10000);
+// Initial device scan - PCM enabled by default
+// Set DISABLE_PCM=1 to disable PCM input/output device scanning for better performance
+if (!process.env.DISABLE_PCM) {
+  console.log("PCM device scanning enabled");
+  scanPcmDevices();
+  setInterval(scanPcmDevices, 10000);
+} else {
+  console.log("PCM device scanning disabled via DISABLE_PCM environment variable");
+}
+
+// =======================
+// 7b) Bluetooth device discovery
+// =======================
+if (blue) {
+  try {
+    blue.Bluetooth();
+    // Give bluetoothctl time to initialize before getting paired devices
+    setTimeout(() => {
+      if (blue.getPairedDevices) {
+        blue.getPairedDevices();
+      }
+    }, 5000);
+
+    blue.on(blue.bluetoothEvents.Device, function (devices) {
+      availableBluetoothInputs = [];
+      for (const device of blue.devices || []) {
+        availableBluetoothInputs.push({
+          name: 'Bluetooth: ' + device.name,
+          id: 'bluealsa:SRV=org.bluealsa,DEV=' + device.mac + ',PROFILE=a2dp',
+          mac: device.mac,
+          connected: device.connected === 'yes'
+        });
+      }
+      updateAllInputs();
+    });
+    console.log("Bluetooth device scanning enabled");
+  } catch (e) {
+    console.error("Error initializing Bluetooth:", e);
+  }
+}
 
 // =======================
 // 8) AirPlay + BabelPod Discovery
 // =======================
-let browser = mdns.createBrowser(mdns.tcp('airplay'));
-browser.on('ready', () => {
-  browser.discover();
-});
-browser.on('update', data => {
+// Use dnssd2 for better service change/down event handling
+let browser = dnssd.Browser(dnssd.tcp('airplay'));
+
+browser.on('serviceUp', data => {
   try {
     if (!data.fullname) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
     if (match && match.length > 1) {
       const address = data.addresses[0];
       const port = data.port;
-      const st = data.txt.find(t => t.startsWith('gpn='))?.slice(4) || null;
+      const st = data.txt?.gpn || null;
       if (!availableAirplayOutputs.some(o => o.host === address && o.port === port)) {
         availableAirplayOutputs.push({
           name: match[1],
@@ -302,11 +347,67 @@ browser.on('update', data => {
           host: address,
           port
         });
+        console.log(`AirPlay device discovered: ${match[1]} at ${address}:${port}`);
         updateAllOutputs();
       }
     }
   } catch (e) {
-    console.error("Error processing mDNS update:", e);
+    console.error("Error processing mDNS serviceUp:", e);
+  }
+});
+
+browser.on('serviceChanged', data => {
+  try {
+    if (!data.fullname) return;
+    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
+    if (match && match.length > 1) {
+      const address = data.addresses[0];
+      const port = data.port;
+      const st = data.txt?.gpn || null;
+      const oldId = 'airplay_' + address + '_' + port;
+      
+      // Find and update existing device
+      const device = availableAirplayOutputs.find(o => o.host === address && o.port === port);
+      if (device) {
+        device.name = match[1];
+        device.stereo = st;
+        console.log(`AirPlay device updated: ${match[1]} at ${address}:${port}`);
+        updateAllOutputs();
+      } else {
+        // Device not found, treat as new
+        availableAirplayOutputs.push({
+          name: match[1],
+          stereo: st,
+          host: address,
+          port
+        });
+        console.log(`AirPlay device added via change event: ${match[1]} at ${address}:${port}`);
+        updateAllOutputs();
+      }
+    }
+  } catch (e) {
+    console.error("Error processing mDNS serviceChanged:", e);
+  }
+});
+
+browser.on('serviceDown', data => {
+  try {
+    if (!data.fullname) return;
+    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
+    if (match && match.length > 1) {
+      const address = data.addresses[0];
+      const port = data.port;
+      const beforeCount = availableAirplayOutputs.length;
+      availableAirplayOutputs = availableAirplayOutputs.filter(
+        o => !(o.host === address && o.port === port)
+      );
+      if (availableAirplayOutputs.length < beforeCount) {
+        console.log(`AirPlay device removed: ${match[1]} at ${address}:${port}`);
+        updateAllOutputs();
+      }
+    }
+  } catch (e) {
+    console.error("Error processing mDNS serviceDown:", e);
   }
 });
 
@@ -314,6 +415,9 @@ browser.on('error', (error) => {
   console.error("mDNS browser error:", error);
   // Continue operating even if mDNS has issues
 });
+
+// Start the browser
+browser.start();
 
 // ============ Advertise BabelPod service
 let advertise = null;
@@ -522,7 +626,62 @@ io.on('connection', socket => {
       if (devId === "void") {
         inputStream = new FromVoid();
         inputStream.pipe(duplicator);
+        io.emit('switched_input', currentInput);
+        io.emit('server_status', { message: `Input switched to ${currentInput}` });
+      } else if (devId.includes('bluealsa') && blue) {
+        // Handle Bluetooth input
+        const btDevice = availableBluetoothInputs.find(d => d.id === devId);
+        if (btDevice && !btDevice.connected) {
+          // Connect to Bluetooth device if not connected
+          io.emit('server_status', { message: `Connecting to Bluetooth device ${btDevice.name}...` });
+          try {
+            blue.connect(btDevice.mac);
+            // Wait for connection before starting arecord
+            setTimeout(() => {
+              if (blue.info) {
+                blue.info(btDevice.mac);
+              }
+              arecordInstance = spawn("arecord", [
+                "-D", devId,
+                "-c", "2",
+                "-f", "S16_LE",
+                "-r", "44100"
+              ]);
+              
+              setupArecordHandlers(devId);
+              inputStream = arecordInstance.stdout;
+              inputStream.on('error', (error) => {
+                console.error(`Error with Bluetooth input stream for ${devId}:`, error);
+              });
+              inputStream.pipe(duplicator);
+              io.emit('switched_input', currentInput);
+              io.emit('server_status', { message: `Input switched to ${btDevice.name}` });
+            }, 5000); // 5 second delay for BT connection
+            return; // Exit early, will emit after timeout
+          } catch (e) {
+            console.error("Error connecting to Bluetooth device:", e);
+            io.emit('server_error', { message: `Failed to connect to Bluetooth: ${e.message}` });
+          }
+        } else {
+          // Already connected, start arecord directly
+          arecordInstance = spawn("arecord", [
+            "-D", devId,
+            "-c", "2",
+            "-f", "S16_LE",
+            "-r", "44100"
+          ]);
+          
+          setupArecordHandlers(devId);
+          inputStream = arecordInstance.stdout;
+          inputStream.on('error', (error) => {
+            console.error(`Error with Bluetooth input stream for ${devId}:`, error);
+          });
+          inputStream.pipe(duplicator);
+          io.emit('switched_input', currentInput);
+          io.emit('server_status', { message: `Input switched to ${currentInput}` });
+        }
       } else {
+        // Regular PCM input
         arecordInstance = spawn("arecord", [
           "-D", devId,
           "-c", "2",
@@ -538,10 +697,10 @@ io.on('connection', socket => {
           console.error(`Error with input stream for ${devId}:`, error);
         });
         inputStream.pipe(duplicator);
+        io.emit('switched_input', currentInput);
+        io.emit('server_status', { message: `Input switched to ${currentInput}` });
       }
       
-      io.emit('switched_input', currentInput);
-      io.emit('server_status', { message: `Input switched to ${currentInput}` });
     } catch (e) {
       console.error("Error switching input:", e);
       io.emit('server_error', { message: `Failed to switch input: ${e.message}` });

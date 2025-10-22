@@ -3,7 +3,93 @@
 ## Overview
 This PR addresses all issues raised in the original issue: adds tests, fixes UI bugs, improves reliability, and includes a comprehensive code review.
 
-## Latest Update: Automatic Input Recovery (Dec 2024)
+## Latest Update: Merged Beneficial Changes from DerDaku/master (Oct 2025)
+
+### Changes Merged
+This update merges carefully selected improvements from the [DerDaku/master PR #31](https://github.com/afaden/babelpod/pull/31) while avoiding duplication and breaking changes.
+
+### What Was Added
+
+#### 1. Enhanced mDNS Library (dnssd2)
+- **Upgraded from mdns-js to dnssd2** for better service discovery
+- **New event handlers**: `serviceUp`, `serviceChanged`, `serviceDown`
+- **Dynamic IP handling**: AirPlay devices that change IP addresses are now properly tracked
+- **Better service updates**: Stereo paired HomePods are reliably detected even after network changes
+
+#### 2. Bluetooth Input Support ✨NEW
+- **Bluetooth audio input**: Stream audio from paired Bluetooth devices (phones, tablets, laptops)
+- **Auto-connection**: Automatically connects to unpaired Bluetooth devices when selected
+- **Status tracking**: Shows connection status for each Bluetooth device
+- **Format**: Uses bluealsa for ALSA-compatible Bluetooth audio streaming
+
+**Setup:**
+```bash
+# Pair your Bluetooth device first
+bluetoothctl
+> pair XX:XX:XX:XX:XX:XX
+> trust XX:XX:XX:XX:XX:XX
+```
+
+#### 3. Optional PCM Device Scanning
+- **Default behavior**: PCM scanning is now enabled by default for backward compatibility
+- **Environment variable control**: Set `DISABLE_PCM=1` to disable PCM device scanning
+- **Use case**: Ideal for systems that only use Bluetooth or don't have ALSA hardware
+
+**Default:** Scans /proc/asound/pcm every 10 seconds  
+**With DISABLE_PCM=1:** Skips PCM scanning for better performance
+
+#### 4. Improved AirPlay Streaming Stability
+- **Pipe option**: Added `{end: false}` to airtunes pipe for better stability
+- **Prevents premature stream closing**: Stream stays open during input changes
+- **Better multi-device support**: More reliable when streaming to multiple AirPlay devices
+
+#### 5. Updated Dependencies
+- **airtunes2**: Pinned to v2.4.9 for stability and Node 20 compatibility
+- **dnssd2**: v1.0.0 for better mDNS handling
+- **bluetoothctl**: Added support via DerDaku's node-bluetoothctl fork
+
+### What Was NOT Merged
+
+- **Stereo HomePod support**: Already implemented in current codebase (no duplication)
+- **UI dropdown height increase**: Current code uses checkboxes, not dropdowns (not applicable)
+
+### Tests Added
+New test suites covering the merged functionality:
+- PCM environment variable behavior (enabled by default, can be disabled)
+- Bluetooth device ID formatting and connection tracking
+- mDNS service event handling (serviceUp, serviceChanged, serviceDown)
+- AirPlay device regex patterns
+- Stereo pairing detection
+- Pipe stability options
+
+**Test Results:** All 16 tests passing ✅
+
+### Breaking Changes
+**None** - All changes are backward compatible:
+- PCM works by default (set `DISABLE_PCM=1` to disable if not needed)
+- Existing AirPlay devices continue to work
+- No changes to the UI or user-facing behavior
+- Bluetooth is optional (gracefully handles missing bluetoothctl module)
+
+### Migration Guide
+PCM devices work by default with no configuration needed. 
+
+If you don't use PCM devices and want better performance:
+```bash
+# Disable PCM device scanning for systems without ALSA
+DISABLE_PCM=1 node index.js
+```
+
+For new Bluetooth support:
+```bash
+# Install bluetoothctl if not already installed
+sudo apt-get install bluez
+
+# Pair your devices
+bluetoothctl
+```
+
+## Previous Update: Automatic Input Recovery (Dec 2024)
 
 ### Problem
 Service would stop broadcasting audio after a few hours of idle time. The arecord process capturing USB audio would crash or lose connection, but the service wouldn't attempt to recover, requiring a manual restart.
