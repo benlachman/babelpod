@@ -37,7 +37,7 @@ LimitMEMLOCK=infinity
 StandardOutput=journal
 StandardError=inherit
 
-# Don't add hardening features that break ALSA or USB device access
+# Make sure you don't add hardening features that break ALSA, Bluetooth, or USB device access
 # (e.g. ProtectSystem, PrivateDevices, etc.)
 
 [Install]
