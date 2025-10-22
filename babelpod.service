@@ -1,0 +1,44 @@
+# /etc/systemd/system/babelpod.service
+[Unit]
+Description=Babelpod audio streaming service
+Wants=network-online.target avahi-daemon.service bluetooth.target
+After=network-online.target avahi-daemon.service bluetooth.target sound.target
+
+[Service]
+Type=simple
+
+# Run as non-root but with audio + Bluetooth access
+User=pi
+Group=pi
+SupplementaryGroups=audio bluetooth plugdev
+
+# Ensure the working dir is the repo
+WorkingDirectory=/home/pi/babelpod
+
+# Environment variables
+Environment=NODE_ENV=production
+# Some audio libs rely on XDG_RUNTIME_DIR to talk to BlueZ cleanly
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
+# Start the Node 20 binary directly
+ExecStart=/usr/bin/node /home/pi/babelpod/index.js
+
+# Restart strategy: keep service alive
+Restart=always
+RestartSec=5
+
+# Audio performance tuning
+Nice=-5
+IOSchedulingClass=realtime
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+# Logging
+StandardOutput=journal
+StandardError=inherit
+
+# Make sure you don't add hardening features that break ALSA, Bluetooth, or USB device access
+# (e.g. ProtectSystem, PrivateDevices, etc.)
+
+[Install]
+WantedBy=multi-user.target

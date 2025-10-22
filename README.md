@@ -37,6 +37,14 @@ cd babelpod
 npm install
 ```
 
+   **Note for Raspberry Pi Zero/Zero 2 W**: If you're running on a low-memory device like the Raspberry Pi Zero or Zero 2 W, you may need to use a lower-memory npm install option:
+
+   ```bash
+   npm install --omit=dev --omit=peer --omit=optional --no-audit --no-fund --jobs=1 --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-timeout=600000
+   ```
+
+   If `npm install` fails with out-of-memory errors, check your swap space with `swapon --show` to determine if you're running out of swap space.
+
 3. **node_airtunes2** must also be installed (the dependency is included in package.json).
 
 ### _Note: Potential Node-Gyp Issues_
@@ -152,6 +160,61 @@ BabelPod now includes comprehensive error handling to prevent crashes and provid
 - **Process Error Handling**: The server won't crash if `arecord` or `aplay` processes fail - errors are logged and reported to the UI.
 - **Network Resilience**: AirPlay connection errors and mDNS issues are handled gracefully.
 - **Graceful Shutdown**: Clean shutdown on Ctrl+C (SIGINT) or SIGTERM properly stops all audio processes.
+
+### Running as a System Service
+
+BabelPod can be configured to run automatically as a systemd service on boot. This is especially useful for permanent installations on Raspberry Pi.
+
+#### Installing the Service
+
+1. Copy the service file to the systemd directory:
+
+```bash
+sudo cp babelpod.service /etc/systemd/system/
+```
+
+2. Edit the service file to match your setup:
+
+```bash
+sudo nano /etc/systemd/system/babelpod.service
+```
+
+   Update the following fields (and others) as needed:
+   - `User` and `Group`: Change from `pi` to your username
+   - `WorkingDirectory`: Set to the full path of your babelpod installation
+   - `ExecStart`: Update the path to your babelpod installation
+   - `XDG_RUNTIME_DIR`: Update the UID (1000) to match your user's UID (run `id -u` to find it)
+
+3. Reload systemd to recognize the new service:
+
+```bash
+sudo systemctl daemon-reload
+```
+
+4. Enable the service to start on boot:
+
+```bash
+sudo systemctl enable babelpod
+```
+
+5. Start the service:
+
+```bash
+sudo systemctl start babelpod
+```
+
+#### Useful Service Commands
+
+- Check service status:
+  ```bash
+  sudo systemctl status babelpod
+  ```
+
+- View service logs:
+  ```bash
+  sudo journalctl -u babelpod # add -f to follow logs in real-time, which is useful for debugging
+  ```
+  
 
 ### Testing
 
