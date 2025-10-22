@@ -119,7 +119,7 @@ sudo cp babelpod.service /etc/systemd/system/
 sudo nano /etc/systemd/system/babelpod.service
 ```
 
-   Update the following fields as needed:
+   Update the following fields (and others) as needed:
    - `User` and `Group`: Change from `pi` to your username
    - `WorkingDirectory`: Set to the full path of your babelpod installation
    - `ExecStart`: Update the path to your babelpod installation
@@ -152,13 +152,9 @@ sudo systemctl start babelpod
 
 - View service logs:
   ```bash
-  sudo journalctl -u babelpod
+  sudo journalctl -u babelpod # add -f to follow logs in real-time, which is useful for debugging
   ```
   
-  Or to follow logs in real-time (showing last 20 lines):
-  ```bash
-  sudo journalctl -u babelpod -n 20 -f
-  ```
 
 ### Testing
 
