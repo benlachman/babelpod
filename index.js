@@ -76,6 +76,7 @@ duplicator.on('error', e => {
 let currentInput = "void";
 let arecordInstance = null;
 let isManualInputSwitch = false; // Track if input switch was intentional
+let isInputSwitchInProgress = false; // Guard against concurrent BT switch timeouts
 let inputRestartAttempts = 0;
 const MAX_INPUT_RESTART_ATTEMPTS = 3;
 const INPUT_RESTART_DELAY = 2000; // 2 seconds
@@ -94,6 +95,7 @@ function cleanupCurrentInput() {
   try {
     if (inputStream) {
       inputStream.unpipe(duplicator);
+      inputStream = null;
     }
     if (arecordInstance) {
       arecordInstance.kill();
@@ -206,6 +208,7 @@ function scanPcmDevices() {
     const lines = text.split('\n').filter(line => line.trim() !== '');
     const all = lines.map(line => {
       const parts = line.split(':');
+      if (parts.length < 3) return null;
       const devName = parts[2].trim();
       const devId = "plughw:" + parts[0].split("-").map(x => parseInt(x, 10)).join(",");
       return {
@@ -214,7 +217,7 @@ function scanPcmDevices() {
         output: parts.some(t => t.includes("playback")),
         input: parts.some(t => t.includes("capture"))
       };
-    });
+    }).filter(Boolean);
     availablePcmOutputs = all.filter(d => d.output);
     availablePcmInputs = all.filter(d => d.input);
   } catch (e) {
@@ -334,7 +337,7 @@ let browser = dnssd.Browser(dnssd.tcp('airplay'));
 
 browser.on('serviceUp', data => {
   try {
-    if (!data.fullname) return;
+    if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
     if (match && match.length > 1) {
       const address = data.addresses[0];
@@ -358,7 +361,7 @@ browser.on('serviceUp', data => {
 
 browser.on('serviceChanged', data => {
   try {
-    if (!data.fullname) return;
+    if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
     if (match && match.length > 1) {
       const address = data.addresses[0];
@@ -392,7 +395,7 @@ browser.on('serviceChanged', data => {
 
 browser.on('serviceDown', data => {
   try {
-    if (!data.fullname) return;
+    if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
     if (match && match.length > 1) {
       const address = data.addresses[0];
@@ -403,7 +406,27 @@ browser.on('serviceDown', data => {
       );
       if (availableAirplayOutputs.length < beforeCount) {
         console.log(`AirPlay device removed: ${match[1]} at ${address}:${port}`);
+
+        // Stop streaming to the removed device
+        const deviceKey = `${address}:${port}`;
+        if (activeAirPlayDevices.includes(deviceKey)) {
+          try {
+            airtunes.stop(deviceKey);
+          } catch (e) {
+            console.error(`Error stopping removed AirPlay device ${deviceKey}:`, e);
+          }
+          activeAirPlayDevices = activeAirPlayDevices.filter(k => k !== deviceKey);
+        }
+
         updateAllOutputs();
+
+        // Remove offline devices from selectedOutputs
+        const validIds = new Set(unifiedOutputs.map(o => o.uiId));
+        const cleanedOutputs = selectedOutputs.filter(id => validIds.has(id));
+        if (cleanedOutputs.length !== selectedOutputs.length) {
+          selectedOutputs = cleanedOutputs;
+          io.emit('switched_output', selectedOutputs);
+        }
       }
     }
   } catch (e) {
@@ -516,6 +539,9 @@ function syncOutputs(newSelected) {
             if (code !== 0 && code !== null) {
               console.error(`aplay exited with code ${code} for ${aid}`);
             }
+            // Clean up dead process from activeLocalOutputs
+            try { duplicator.unpipe(child.stdin); } catch (e) { /* already gone */ }
+            activeLocalOutputs = activeLocalOutputs.filter(o => o.process !== child);
           });
           
           duplicator.pipe(child.stdin).on('error', (e) => {
@@ -635,23 +661,28 @@ io.on('connection', socket => {
           // Connect to Bluetooth device if not connected
           io.emit('server_status', { message: `Connecting to Bluetooth device ${btDevice.name}...` });
           try {
+            isInputSwitchInProgress = true;
             blue.connect(btDevice.mac);
             // Wait for connection before starting arecord
+            const switchDevId = devId; // Capture for closure
             setTimeout(() => {
+              isInputSwitchInProgress = false;
+              // Bail if user switched to a different input during the wait
+              if (currentInput !== switchDevId) return;
               if (blue.info) {
                 blue.info(btDevice.mac);
               }
               arecordInstance = spawn("arecord", [
-                "-D", devId,
+                "-D", switchDevId,
                 "-c", "2",
                 "-f", "S16_LE",
                 "-r", "44100"
               ]);
-              
-              setupArecordHandlers(devId);
+
+              setupArecordHandlers(switchDevId);
               inputStream = arecordInstance.stdout;
               inputStream.on('error', (error) => {
-                console.error(`Error with Bluetooth input stream for ${devId}:`, error);
+                console.error(`Error with Bluetooth input stream for ${switchDevId}:`, error);
               });
               inputStream.pipe(duplicator);
               io.emit('switched_input', currentInput);
@@ -748,6 +779,7 @@ io.on('connection', socket => {
 
     if (socket.id === sessionOwner) {
       sessionOwner = null;
+      io.emit('sessionOwnerUpdate', null);
     }
   });
 });

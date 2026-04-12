@@ -199,6 +199,10 @@
       let currentVolume = 50;
       let currentOutputs = [];
       let isOwner = false;
+      let isUserDraggingVolume = false;
+      let lastEmittedVolume = null;
+      let lastEmittedOutputs = null;
+      let lastEmittedInput = null;
 
       const inputSelect = document.getElementById("inputSelect");
       const volumeRange = document.getElementById("outputVolume");
@@ -285,25 +289,34 @@
       });
       socket.on("switched_input", (inp) => {
         currentInput = inp;
-        inputSelect.value = inp;
         curInputText.textContent = inp;
+        if (inp !== lastEmittedInput) {
+          inputSelect.value = inp;
+        }
       });
       socket.on("switched_output", (outs) => {
         if (!Array.isArray(outs)) outs = [outs];
         currentOutputs = outs;
-        const allChecks = outputsListDiv.querySelectorAll(
-          "input[type=checkbox]"
-        );
-        allChecks.forEach((ch) => {
-          ch.checked = currentOutputs.includes(ch.value);
-        });
+        const isEcho = lastEmittedOutputs !== null &&
+          outs.length === lastEmittedOutputs.length &&
+          outs.every((v, i) => v === lastEmittedOutputs[i]);
+        if (!isEcho) {
+          const allChecks = outputsListDiv.querySelectorAll(
+            "input[type=checkbox]"
+          );
+          allChecks.forEach((ch) => {
+            ch.checked = currentOutputs.includes(ch.value);
+          });
+        }
         renderActiveOutputs();
       });
       socket.on("changed_output_volume", (vol) => {
         currentVolume = vol;
-        volumeRange.value = vol;
         curVolumeText.textContent = String(vol);
-        updateSliderProgress(); // Fix: Update slider background when server changes volume
+        if (!isUserDraggingVolume && Number(vol) !== lastEmittedVolume) {
+          volumeRange.value = vol;
+          updateSliderProgress();
+        }
       });
       socket.on("sessionOwnerUpdate", (ownerId) => {
         isOwner = socket.id === ownerId;
@@ -315,8 +328,11 @@
         updateOverlay();
       });
 
-      // Add connection status handlers
+      // Reset echo tracking on reconnect
       socket.on("connect", () => {
+        lastEmittedVolume = null;
+        lastEmittedOutputs = null;
+        lastEmittedInput = null;
         showStatus("Connected to BabelPod server");
       });
 
@@ -347,8 +363,9 @@
         cbs.forEach((cb) => {
           if (cb.checked) sel.push(cb.value);
         });
-        
+
         // Debounce output changes to prevent rapid switching
+        lastEmittedOutputs = sel.slice();
         if (window.outputChangeTimeout) clearTimeout(window.outputChangeTimeout);
         window.outputChangeTimeout = setTimeout(() => {
           socket.emit("switch_output", sel);
@@ -356,16 +373,24 @@
       }
 
       inputSelect.addEventListener("change", (ev) => {
+        lastEmittedInput = ev.target.value;
         socket.emit("switch_input", ev.target.value);
       });
+
+      // Track slider drag state to prevent server echoes from snapping the slider
+      volumeRange.addEventListener("pointerdown", () => { isUserDraggingVolume = true; });
+      volumeRange.addEventListener("pointerup", () => { isUserDraggingVolume = false; });
+      volumeRange.addEventListener("pointercancel", () => { isUserDraggingVolume = false; });
+      volumeRange.addEventListener("pointerleave", () => { isUserDraggingVolume = false; });
 
       // Debounce volume changes to prevent flooding the server
       let volumeChangeTimeout = null;
       volumeRange.addEventListener("input", (ev) => {
         // Update UI immediately for smooth slider movement
         updateSliderProgress();
-        
+
         // Debounce the socket emission
+        lastEmittedVolume = Number(ev.target.value);
         if (volumeChangeTimeout) clearTimeout(volumeChangeTimeout);
         volumeChangeTimeout = setTimeout(() => {
           socket.emit("change_output_volume", ev.target.value);
