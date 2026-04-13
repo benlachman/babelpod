@@ -132,11 +132,11 @@ function restartInputDevice(devId, delayMs = 0) {
       inputStream.pipe(duplicator);
       
       inputRestartAttempts++;
-      io.emit('server_status', { message: `Input device reconnected: ${devId}` });
+      io.emit('status', { message: `Input device reconnected: ${devId}` });
       console.log(`Successfully restarted input device: ${devId}`);
     } catch (e) {
       console.error(`Failed to restart input device ${devId}:`, e);
-      io.emit('server_error', { message: `Failed to reconnect input: ${e.message}` });
+      io.emit('serverError', { message: `Failed to reconnect input: ${e.message}` });
     }
   }, delayMs);
 }
@@ -147,7 +147,7 @@ function setupArecordHandlers(devId) {
   
   arecordInstance.on('error', (error) => {
     console.error(`Error with arecord process for ${devId}:`, error);
-    io.emit('server_error', { message: `Input device error: ${error.message}` });
+    io.emit('serverError', { message: `Input device error: ${error.message}` });
   });
   
   arecordInstance.stderr.on('data', (data) => {
@@ -155,7 +155,7 @@ function setupArecordHandlers(devId) {
     console.error(`arecord stderr for ${devId}:`, msg);
     // Only report critical errors to UI
     if (msg.includes('error') || msg.includes('failed')) {
-      io.emit('server_error', { message: `Input error: ${msg.substring(0, 100)}` });
+      io.emit('serverError', { message: `Input error: ${msg.substring(0, 100)}` });
     }
   });
   
@@ -170,13 +170,13 @@ function setupArecordHandlers(devId) {
     if (!isManualInputSwitch && currentInput === devId) {
       if (code !== 0 || signal) {
         console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
-        io.emit('server_error', { message: `Input device disconnected - attempting to reconnect...` });
+        io.emit('serverError', { message: `Input device disconnected - attempting to reconnect...` });
         
         if (inputRestartAttempts < MAX_INPUT_RESTART_ATTEMPTS) {
           restartInputDevice(devId, INPUT_RESTART_DELAY);
         } else {
           console.error(`Max restart attempts (${MAX_INPUT_RESTART_ATTEMPTS}) reached for ${devId}`);
-          io.emit('server_error', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} reconnection attempts. Please reselect the input.` });
+          io.emit('serverError', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} reconnection attempts. Please reselect the input.` });
           inputRestartAttempts = 0; // Reset for next manual selection
         }
       }
@@ -277,15 +277,36 @@ function buildUnifiedOutputs() {
   return local.concat(air);
 }
 
+// Build clean payloads for clients (strip server internals)
+function buildCleanInputs() {
+  const defInputs = [{ name: 'None', id: 'void' }];
+  return defInputs.concat(availablePcmInputs, availableBluetoothInputs)
+    .map(i => ({ id: i.id, name: i.name }));
+}
+
+function buildCleanOutputs() {
+  return unifiedOutputs.map(o => ({ id: o.uiId, name: o.name }));
+}
+
+function buildStatePayload() {
+  return {
+    version: 1,
+    sessionOwner,
+    inputs: buildCleanInputs(),
+    outputs: buildCleanOutputs(),
+    selectedInput: currentInput,
+    selectedOutputs,
+    volume
+  };
+}
+
 // Emit updates to clients
 function updateAllOutputs() {
   unifiedOutputs = buildUnifiedOutputs();
-  io.emit('available_outputs', unifiedOutputs);
+  io.emit('outputs', { outputs: buildCleanOutputs() });
 }
 function updateAllInputs() {
-  const defInputs = [{ name: 'None', id: 'void' }];
-  const finalIn = defInputs.concat(availablePcmInputs, availableBluetoothInputs);
-  io.emit('available_inputs', finalIn);
+  io.emit('inputs', { inputs: buildCleanInputs() });
 }
 
 // Initial device scan - PCM enabled by default
@@ -293,6 +314,22 @@ function updateAllInputs() {
 if (!process.env.DISABLE_PCM) {
   console.log("PCM device scanning enabled");
   scanPcmDevices();
+  // Auto-select first available input on startup
+  if (currentInput === "void" && availablePcmInputs.length > 0) {
+    const autoDevId = availablePcmInputs[0].id;
+    console.log("Auto-selecting input:", autoDevId);
+    cleanupCurrentInput();
+    currentInput = autoDevId;
+    arecordInstance = spawn("arecord", [
+      "-D", autoDevId, "-c", "2", "-f", "S16_LE", "-r", "44100"
+    ]);
+    setupArecordHandlers(autoDevId);
+    inputStream = arecordInstance.stdout;
+    inputStream.on('error', (error) => {
+      console.error(`Error with auto-selected input stream for ${autoDevId}:`, error);
+    });
+    inputStream.pipe(duplicator);
+  }
   setInterval(scanPcmDevices, 10000);
 } else {
   console.log("PCM device scanning disabled via DISABLE_PCM environment variable");
@@ -425,7 +462,7 @@ browser.on('serviceDown', data => {
         const cleanedOutputs = selectedOutputs.filter(id => validIds.has(id));
         if (cleanedOutputs.length !== selectedOutputs.length) {
           selectedOutputs = cleanedOutputs;
-          io.emit('switched_output', selectedOutputs);
+          io.emit('output', { ids: selectedOutputs });
         }
       }
     }
@@ -528,7 +565,7 @@ function syncOutputs(newSelected) {
           // Handle child process errors
           child.on('error', (error) => {
             console.error(`Error with aplay process for ${aid}:`, error);
-            io.emit('server_error', { message: `Local output error: ${error.message}` });
+            io.emit('serverError', { message: `Local output error: ${error.message}` });
           });
           
           child.stderr.on('data', (data) => {
@@ -566,14 +603,14 @@ function syncOutputs(newSelected) {
                 }
               } catch (e) {
                 console.error(`Error adding AirPlay device ${device.host}:${device.port}:`, e);
-                io.emit('server_error', { message: `AirPlay error: ${e.message}` });
+                io.emit('serverError', { message: `AirPlay error: ${e.message}` });
               }
             }
           });
         }
       } catch (e) {
         console.error(`Error adding output ${aid}:`, e);
-        io.emit('server_error', { message: `Error adding output: ${e.message}` });
+        io.emit('serverError', { message: `Error adding output: ${e.message}` });
       }
     });
     
@@ -591,7 +628,7 @@ function syncOutputs(newSelected) {
     }
   } catch (e) {
     console.error("Error in syncOutputs:", e);
-    io.emit('server_error', { message: `Output sync error: ${e.message}` });
+    io.emit('serverError', { message: `Output sync error: ${e.message}` });
   }
 }
 
@@ -610,33 +647,25 @@ let sessionOwner = null;
 io.on('connection', socket => {
   console.log("Client connected:", socket.id);
 
-  if (sessionOwner && sessionOwner !== socket.id) {
-    io.to(sessionOwner).emit('sessionLostControl');
+  if (!sessionOwner) {
     sessionOwner = socket.id;
-  } else if (!sessionOwner) {
-    sessionOwner = socket.id;
+    io.emit('session', { owner: sessionOwner });
   }
-  socket.emit('sessionOwnerUpdate', sessionOwner);
 
-  socket.on('user_takeover', () => {
+  socket.on('takeover', () => {
     console.log("User takeover:", socket.id);
 
     if (sessionOwner !== socket.id) {
-      if (sessionOwner) {
-        io.to(sessionOwner).emit('sessionLostControl');
-      }
       sessionOwner = socket.id;
-      io.emit('sessionOwnerUpdate', sessionOwner);
+      io.emit('session', { owner: sessionOwner });
     }
   });
 
-  updateAllInputs();
-  updateAllOutputs();
-  socket.emit('switched_input', currentInput);
-  socket.emit('switched_output', selectedOutputs);
-  socket.emit('changed_output_volume', volume);
+  socket.emit('state', buildStatePayload());
 
-  socket.on('switch_input', (devId) => {
+  socket.on('setInput', (data) => {
+    const devId = data?.id;
+    if (!devId) return;
     console.log("Switching input to:", devId);
 
     if (socket.id !== sessionOwner) return;
@@ -652,14 +681,14 @@ io.on('connection', socket => {
       if (devId === "void") {
         inputStream = new FromVoid();
         inputStream.pipe(duplicator);
-        io.emit('switched_input', currentInput);
-        io.emit('server_status', { message: `Input switched to ${currentInput}` });
+        io.emit('input', { id: currentInput });
+        io.emit('status', { message: `Input switched to ${currentInput}` });
       } else if (devId.includes('bluealsa') && blue) {
         // Handle Bluetooth input
         const btDevice = availableBluetoothInputs.find(d => d.id === devId);
         if (btDevice && !btDevice.connected) {
           // Connect to Bluetooth device if not connected
-          io.emit('server_status', { message: `Connecting to Bluetooth device ${btDevice.name}...` });
+          io.emit('status', { message: `Connecting to Bluetooth device ${btDevice.name}...` });
           try {
             isInputSwitchInProgress = true;
             blue.connect(btDevice.mac);
@@ -685,13 +714,13 @@ io.on('connection', socket => {
                 console.error(`Error with Bluetooth input stream for ${switchDevId}:`, error);
               });
               inputStream.pipe(duplicator);
-              io.emit('switched_input', currentInput);
-              io.emit('server_status', { message: `Input switched to ${btDevice.name}` });
+              io.emit('input', { id: currentInput });
+              io.emit('status', { message: `Input switched to ${btDevice.name}` });
             }, 5000); // 5 second delay for BT connection
             return; // Exit early, will emit after timeout
           } catch (e) {
             console.error("Error connecting to Bluetooth device:", e);
-            io.emit('server_error', { message: `Failed to connect to Bluetooth: ${e.message}` });
+            io.emit('serverError', { message: `Failed to connect to Bluetooth: ${e.message}` });
           }
         } else {
           // Already connected, start arecord directly
@@ -708,8 +737,8 @@ io.on('connection', socket => {
             console.error(`Error with Bluetooth input stream for ${devId}:`, error);
           });
           inputStream.pipe(duplicator);
-          io.emit('switched_input', currentInput);
-          io.emit('server_status', { message: `Input switched to ${currentInput}` });
+          io.emit('input', { id: currentInput });
+          io.emit('status', { message: `Input switched to ${currentInput}` });
         }
       } else {
         // Regular PCM input
@@ -728,37 +757,40 @@ io.on('connection', socket => {
           console.error(`Error with input stream for ${devId}:`, error);
         });
         inputStream.pipe(duplicator);
-        io.emit('switched_input', currentInput);
-        io.emit('server_status', { message: `Input switched to ${currentInput}` });
+        io.emit('input', { id: currentInput });
+        io.emit('status', { message: `Input switched to ${currentInput}` });
       }
       
     } catch (e) {
       console.error("Error switching input:", e);
-      io.emit('server_error', { message: `Failed to switch input: ${e.message}` });
+      io.emit('serverError', { message: `Failed to switch input: ${e.message}` });
     }
   });
 
-  socket.on('switch_output', (outs) => {
+  socket.on('setOutput', (data) => {
+    const outs = data?.ids;
+    if (!Array.isArray(outs)) return;
     console.log("Switching output to:", outs);
 
     if (socket.id !== sessionOwner) return;
     try {
-      if (!Array.isArray(outs)) outs = [outs];
       syncOutputs(outs);
-      io.emit('switched_output', outs);
-      io.emit('server_status', { message: `Outputs updated` });
+      io.emit('output', { ids: outs });
+      io.emit('status', { message: `Outputs updated` });
     } catch (e) {
       console.error("Error switching output:", e);
-      io.emit('server_error', { message: `Failed to switch output: ${e.message}` });
+      io.emit('serverError', { message: `Failed to switch output: ${e.message}` });
     }
   });
 
-  socket.on('change_output_volume', (vol) => {
+  socket.on('setVolume', (data) => {
+    const vol = data?.value;
+    if (typeof vol !== 'number') return;
     console.log("Changing output volume to:", vol);
 
     if (socket.id !== sessionOwner) return;
     try {
-      volume = Number(vol) || 0;
+      volume = vol;
       // Set volume on all active AirPlay devices
       activeAirPlayDevices.forEach(deviceKey => {
         try {
@@ -767,10 +799,10 @@ io.on('connection', socket => {
           console.error(`Error setting volume for ${deviceKey}:`, e);
         }
       });
-      io.emit('changed_output_volume', volume);
+      io.emit('volume', { value: volume });
     } catch (e) {
       console.error("Error changing volume:", e);
-      io.emit('server_error', { message: `Failed to change volume: ${e.message}` });
+      io.emit('serverError', { message: `Failed to change volume: ${e.message}` });
     }
   });
 
@@ -779,7 +811,14 @@ io.on('connection', socket => {
 
     if (socket.id === sessionOwner) {
       sessionOwner = null;
-      io.emit('sessionOwnerUpdate', null);
+      // If exactly one client remains, auto-assign ownership
+      const remaining = io.sockets.sockets;
+      if (remaining.size === 1) {
+        const [onlyClient] = remaining.values();
+        sessionOwner = onlyClient.id;
+        console.log("Auto-assigned ownership to sole remaining client:", sessionOwner);
+      }
+      io.emit('session', { owner: sessionOwner });
     }
   });
 });
@@ -797,13 +836,13 @@ server.listen(PORT, () => {
 // =======================
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
-  io.emit('server_error', { message: 'Server encountered an unexpected error' });
+  io.emit('serverError', { message: 'Server encountered an unexpected error' });
   // Don't exit - try to recover
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  io.emit('server_error', { message: 'Server encountered an unexpected error' });
+  io.emit('serverError', { message: 'Server encountered an unexpected error' });
 });
 
 // Graceful shutdown

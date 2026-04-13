@@ -98,20 +98,37 @@
         margin: 1rem 0 0.25rem;
         font-weight: 500;
       }
-      .checkbox-list {
+      .radio-list, .checkbox-list {
         background: #2a2a2a;
         border: 1px solid #444;
         border-radius: 6px;
         padding: 0.5rem;
       }
-      .checkbox-list label {
+      .radio-list label, .checkbox-list label {
         display: flex;
         align-items: center;
-        margin: 0.4rem 0;
+        padding: 0.5rem;
+        margin: 0.25rem 0;
+        border-radius: 4px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .radio-list label:active, .checkbox-list label:active {
+        background: #3a3a3a;
+      }
+      .radio-list input[type="radio"] {
+        margin-right: 0.5rem;
+        transform: scale(1.2);
+        accent-color: #fe0000;
+      }
+      .radio-list label.selected {
+        background: #2f2222;
+        border: 1px solid #662222;
       }
       .checkbox-list input[type="checkbox"] {
         margin-right: 0.5rem;
         transform: scale(1.2);
+        accent-color: #fe0000;
       }
       .info {
         background: #1f1f1f;
@@ -136,9 +153,18 @@
         flex-direction: column;
         z-index: 9999;
       }
+      #sessionOverlay h1 {
+        font-size: 1.2rem;
+        text-align: center;
+        padding: 0 1rem;
+      }
+      #sessionOverlay p {
+        text-align: center;
+        padding: 0 1rem;
+      }
       #sessionOverlay button {
         margin-top: 1rem;
-        padding: 0.5rem 1rem;
+        padding: 0.75rem 1.5rem;
         font-size: 1rem;
         background: #444;
         border: none;
@@ -154,8 +180,8 @@
   <body>
     <header>BabelPod</header>
     <div class="container">
-      <label for="inputSelect">Input Device</label>
-      <select id="inputSelect" size="4"></select>
+      <label>Input Device</label>
+      <div class="radio-list" id="inputsList"></div>
 
       <label for="outputVolume">Volume</label>
       <input type="range" min="0" max="100" value="50" id="outputVolume" />
@@ -198,13 +224,14 @@
       let currentInput = "void";
       let currentVolume = 50;
       let currentOutputs = [];
+      let availableInputsList = [];
       let isOwner = false;
       let isUserDraggingVolume = false;
       let lastEmittedVolume = null;
       let lastEmittedOutputs = null;
       let lastEmittedInput = null;
 
-      const inputSelect = document.getElementById("inputSelect");
+      const inputsList = document.getElementById("inputsList");
       const volumeRange = document.getElementById("outputVolume");
       const outputsListDiv = document.getElementById("outputsList");
       const curInputText = document.getElementById("curInputText");
@@ -256,105 +283,129 @@
         }
       }
       takeOverBtn.addEventListener("click", () => {
-        socket.emit("user_takeover");
+        socket.emit("takeover");
       });
 
-      // Socket events
-      socket.on("available_inputs", (list) => {
-        while (inputSelect.firstChild)
-          inputSelect.removeChild(inputSelect.firstChild);
-        list.forEach((item) => {
-          const opt = document.createElement("option");
-          opt.value = item.id;
-          opt.textContent = item.name;
-          inputSelect.appendChild(opt);
+      function updateInputSelection() {
+        inputsList.querySelectorAll("label").forEach((lb) => {
+          const radio = lb.querySelector("input[type=radio]");
+          lb.classList.toggle("selected", radio.value === currentInput);
         });
-        inputSelect.value = currentInput;
-      });
-      socket.on("available_outputs", (unified) => {
+      }
+
+      function renderInputsList() {
+        while (inputsList.firstChild)
+          inputsList.removeChild(inputsList.firstChild);
+        availableInputsList.forEach((item) => {
+          const lb = document.createElement("label");
+          const r = document.createElement("input");
+          r.type = "radio";
+          r.name = "inputDevice";
+          r.value = item.id;
+          r.checked = item.id === currentInput;
+          r.addEventListener("change", onInputRadioChange);
+          lb.appendChild(r);
+          lb.appendChild(document.createTextNode(item.name));
+          if (item.id === currentInput) lb.classList.add("selected");
+          inputsList.appendChild(lb);
+        });
+      }
+
+      function renderOutputsList(outputs) {
         while (outputsListDiv.firstChild)
           outputsListDiv.removeChild(outputsListDiv.firstChild);
-        unified.forEach((u) => {
+        outputs.forEach((o) => {
           let lb = document.createElement("label");
           let c = document.createElement("input");
           c.type = "checkbox";
-          c.value = u.uiId;
-          c.checked = currentOutputs.includes(u.uiId);
+          c.value = o.id;
+          c.checked = currentOutputs.includes(o.id);
           c.addEventListener("change", onOutputCheckChange);
           lb.appendChild(c);
-          lb.appendChild(document.createTextNode(u.name));
+          lb.appendChild(document.createTextNode(o.name));
           outputsListDiv.appendChild(lb);
         });
+      }
+
+      // Socket events — API v1
+
+      // Full state bundle on connection
+      socket.on("state", (s) => {
+        availableInputsList = s.inputs;
+        currentInput = s.selectedInput;
+        currentOutputs = s.selectedOutputs;
+        currentVolume = s.volume;
+        isOwner = (socket.id === s.sessionOwner);
+
+        renderInputsList();
+        updateInputSelection();
+        renderOutputsList(s.outputs);
+        renderActiveOutputs();
+        volumeRange.value = s.volume;
+        curVolumeText.textContent = String(s.volume);
+        curInputText.textContent = s.selectedInput;
+        updateSliderProgress();
+        updateOverlay();
+      });
+
+      // Incremental updates
+      socket.on("inputs", (d) => {
+        availableInputsList = d.inputs;
+        renderInputsList();
+      });
+      socket.on("outputs", (d) => {
+        renderOutputsList(d.outputs);
         renderActiveOutputs();
       });
-      socket.on("switched_input", (inp) => {
-        currentInput = inp;
-        curInputText.textContent = inp;
-        if (inp !== lastEmittedInput) {
-          inputSelect.value = inp;
+      socket.on("input", (d) => {
+        currentInput = d.id;
+        curInputText.textContent = d.id;
+        if (d.id !== lastEmittedInput) {
+          const radio = inputsList.querySelector(`input[value="${CSS.escape(d.id)}"]`);
+          if (radio) radio.checked = true;
         }
+        updateInputSelection();
       });
-      socket.on("switched_output", (outs) => {
-        if (!Array.isArray(outs)) outs = [outs];
-        currentOutputs = outs;
+      socket.on("output", (d) => {
+        currentOutputs = d.ids;
         const isEcho = lastEmittedOutputs !== null &&
-          outs.length === lastEmittedOutputs.length &&
-          outs.every((v, i) => v === lastEmittedOutputs[i]);
+          d.ids.length === lastEmittedOutputs.length &&
+          d.ids.every((v, i) => v === lastEmittedOutputs[i]);
         if (!isEcho) {
-          const allChecks = outputsListDiv.querySelectorAll(
-            "input[type=checkbox]"
-          );
+          const allChecks = outputsListDiv.querySelectorAll("input[type=checkbox]");
           allChecks.forEach((ch) => {
             ch.checked = currentOutputs.includes(ch.value);
           });
         }
         renderActiveOutputs();
       });
-      socket.on("changed_output_volume", (vol) => {
-        currentVolume = vol;
-        curVolumeText.textContent = String(vol);
-        if (!isUserDraggingVolume && Number(vol) !== lastEmittedVolume) {
-          volumeRange.value = vol;
+      socket.on("volume", (d) => {
+        currentVolume = d.value;
+        curVolumeText.textContent = String(d.value);
+        if (!isUserDraggingVolume && d.value !== lastEmittedVolume) {
+          volumeRange.value = d.value;
           updateSliderProgress();
         }
       });
-      socket.on("sessionOwnerUpdate", (ownerId) => {
-        isOwner = socket.id === ownerId;
+      socket.on("session", (d) => {
+        isOwner = (socket.id === d.owner);
         updateOverlay();
       });
-      socket.on("sessionLostControl", () => {
-        // We are no longer the owner
-        isOwner = false;
-        updateOverlay();
-      });
+      socket.on("status", (d) => { showStatus(d.message); });
+      socket.on("serverError", (d) => { showError(d.message); });
 
-      // Reset echo tracking on reconnect
+      // Connection lifecycle
       socket.on("connect", () => {
         lastEmittedVolume = null;
         lastEmittedOutputs = null;
         lastEmittedInput = null;
         showStatus("Connected to BabelPod server");
       });
-
       socket.on("disconnect", () => {
         showError("Disconnected from server. Attempting to reconnect...");
       });
-
       socket.on("connect_error", (error) => {
         showError("Connection error: " + error.message);
-      });
-
-      socket.on("error", (error) => {
-        showError("Socket error: " + (error.message || error));
-      });
-
-      // Server-side error reporting
-      socket.on("server_error", (data) => {
-        showError("Server error: " + data.message);
-      });
-
-      socket.on("server_status", (data) => {
-        showStatus(data.message);
       });
 
       function onOutputCheckChange(e) {
@@ -368,14 +419,15 @@
         lastEmittedOutputs = sel.slice();
         if (window.outputChangeTimeout) clearTimeout(window.outputChangeTimeout);
         window.outputChangeTimeout = setTimeout(() => {
-          socket.emit("switch_output", sel);
+          socket.emit("setOutput", { ids: sel });
         }, 150);
       }
 
-      inputSelect.addEventListener("change", (ev) => {
+      function onInputRadioChange(ev) {
         lastEmittedInput = ev.target.value;
-        socket.emit("switch_input", ev.target.value);
-      });
+        socket.emit("setInput", { id: ev.target.value });
+        updateInputSelection();
+      }
 
       // Track slider drag state to prevent server echoes from snapping the slider
       volumeRange.addEventListener("pointerdown", () => { isUserDraggingVolume = true; });
@@ -393,7 +445,7 @@
         lastEmittedVolume = Number(ev.target.value);
         if (volumeChangeTimeout) clearTimeout(volumeChangeTimeout);
         volumeChangeTimeout = setTimeout(() => {
-          socket.emit("change_output_volume", ev.target.value);
+          socket.emit("setVolume", { value: Number(ev.target.value) });
         }, 100);
       });
     </script>
