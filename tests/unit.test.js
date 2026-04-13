@@ -119,11 +119,226 @@ describe('BabelPod Utility Functions', () => {
 
   describe('AirPlay Pipe Stability', () => {
     test('should use end:false option for AirPlay pipe', () => {
-      // The pipe to airtunes should use {end: false} for stability
-      // This prevents the stream from being ended when input changes
       const pipeOptions = { end: false };
       expect(pipeOptions.end).toBe(false);
     });
+  });
+});
+
+describe('RMS Audio Level Calculation', () => {
+  function calculateRms(buffer) {
+    const sampleCount = Math.floor(buffer.length / 2);
+    let sumOfSquares = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const sample = buffer.readInt16LE(i * 2) / 32768;
+      sumOfSquares += sample * sample;
+    }
+    return Math.sqrt(sumOfSquares / sampleCount);
+  }
+
+  test('should return 0 for silent audio (all zeros)', () => {
+    const buffer = Buffer.alloc(4096, 0);
+    expect(calculateRms(buffer)).toBe(0);
+  });
+
+  test('should return near 1.0 for maximum amplitude', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(32767, i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0.99);
+    expect(rms).toBeLessThanOrEqual(1.0);
+  });
+
+  test('should return intermediate value for half amplitude', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(16384, i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0.4);
+    expect(rms).toBeLessThan(0.6);
+  });
+
+  test('should handle typical noise floor levels', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(Math.round(Math.random() * 60 - 30), i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0);
+    expect(rms).toBeLessThan(0.002);
+  });
+});
+
+describe('Autoplay State Machine', () => {
+  const DETECT_SUSTAIN_MS = 250;
+  const SILENCE_TIMEOUT_MS = 300000;
+
+  let autoplayState;
+
+  function createState(initialState = 'idle') {
+    return {
+      state: initialState,
+      detectingSince: null,
+      silenceSince: null,
+    };
+  }
+
+  function tickAutoplay(state, rmsLevel, threshold = 0.002, now = Date.now()) {
+    switch (state.state) {
+      case 'paused':
+        return state;
+      case 'idle':
+        if (rmsLevel > threshold) {
+          return { ...state, state: 'detecting', detectingSince: now };
+        }
+        return state;
+      case 'detecting':
+        if (rmsLevel <= threshold) {
+          return { ...state, state: 'idle', detectingSince: null };
+        } else if (now - state.detectingSince >= DETECT_SUSTAIN_MS) {
+          return { ...state, state: 'playing', detectingSince: null };
+        }
+        return state;
+      case 'playing':
+        if (rmsLevel <= threshold) {
+          return { ...state, state: 'silence', silenceSince: now };
+        }
+        return state;
+      case 'silence':
+        if (rmsLevel > threshold) {
+          return { ...state, state: 'playing', silenceSince: null };
+        } else if (now - state.silenceSince >= SILENCE_TIMEOUT_MS) {
+          return { ...state, state: 'idle', silenceSince: null };
+        }
+        return state;
+      default:
+        return state;
+    }
+  }
+
+  test('should stay paused when receiving audio', () => {
+    const state = createState('paused');
+    const result = tickAutoplay(state, 0.1);
+    expect(result.state).toBe('paused');
+  });
+
+  test('should transition from idle to detecting on signal', () => {
+    const state = createState('idle');
+    const result = tickAutoplay(state, 0.01);
+    expect(result.state).toBe('detecting');
+    expect(result.detectingSince).not.toBeNull();
+  });
+
+  test('should stay idle when signal is below threshold', () => {
+    const state = createState('idle');
+    const result = tickAutoplay(state, 0.001);
+    expect(result.state).toBe('idle');
+  });
+
+  test('should return to idle from detecting when signal drops', () => {
+    const state = { ...createState('detecting'), detectingSince: Date.now() };
+    const result = tickAutoplay(state, 0.001);
+    expect(result.state).toBe('idle');
+  });
+
+  test('should transition from detecting to playing after sustain period', () => {
+    const now = Date.now();
+    const state = { ...createState('detecting'), detectingSince: now - 300 };
+    const result = tickAutoplay(state, 0.01, 0.002, now);
+    expect(result.state).toBe('playing');
+  });
+
+  test('should stay detecting before sustain period expires', () => {
+    const now = Date.now();
+    const state = { ...createState('detecting'), detectingSince: now - 100 };
+    const result = tickAutoplay(state, 0.01, 0.002, now);
+    expect(result.state).toBe('detecting');
+  });
+
+  test('should transition from playing to silence when signal drops', () => {
+    const state = createState('playing');
+    const result = tickAutoplay(state, 0.001);
+    expect(result.state).toBe('silence');
+    expect(result.silenceSince).not.toBeNull();
+  });
+
+  test('should return from silence to playing when signal resumes', () => {
+    const state = { ...createState('silence'), silenceSince: Date.now() };
+    const result = tickAutoplay(state, 0.01);
+    expect(result.state).toBe('playing');
+  });
+
+  test('should transition from silence to idle after timeout', () => {
+    const now = Date.now();
+    const state = { ...createState('silence'), silenceSince: now - 300001 };
+    const result = tickAutoplay(state, 0.001, 0.002, now);
+    expect(result.state).toBe('idle');
+  });
+
+  test('should stay in silence before timeout expires', () => {
+    const now = Date.now();
+    const state = { ...createState('silence'), silenceSince: now - 60000 };
+    const result = tickAutoplay(state, 0.001, 0.002, now);
+    expect(result.state).toBe('silence');
+  });
+});
+
+describe('Config Management', () => {
+  const DEFAULT_CONFIG = {
+    displayName: 'TestPi',
+    defaultInputId: null,
+    defaultOutputIds: [],
+    defaultVolume: 50,
+    autoplayEnabled: false,
+    autoplayThreshold: 0.002
+  };
+
+  test('should merge partial config updates', () => {
+    const config = { ...DEFAULT_CONFIG };
+    const partial = { displayName: 'NewName', defaultVolume: 75 };
+    const merged = { ...config, ...partial };
+    expect(merged.displayName).toBe('NewName');
+    expect(merged.defaultVolume).toBe(75);
+    expect(merged.defaultInputId).toBeNull();
+    expect(merged.autoplayEnabled).toBe(false);
+  });
+
+  test('should preserve unspecified fields during partial update', () => {
+    const config = { ...DEFAULT_CONFIG, displayName: 'Original', autoplayEnabled: true };
+    const partial = { defaultVolume: 80 };
+    const merged = { ...config, ...partial };
+    expect(merged.displayName).toBe('Original');
+    expect(merged.autoplayEnabled).toBe(true);
+    expect(merged.defaultVolume).toBe(80);
+  });
+
+  test('should handle empty partial update', () => {
+    const config = { ...DEFAULT_CONFIG };
+    const merged = { ...config, ...{} };
+    expect(merged).toEqual(DEFAULT_CONFIG);
+  });
+
+  test('should validate volume range', () => {
+    const volume = 150;
+    const clamped = Math.max(0, Math.min(100, volume));
+    expect(clamped).toBe(100);
+  });
+
+  test('should validate volume range low', () => {
+    const volume = -10;
+    const clamped = Math.max(0, Math.min(100, volume));
+    expect(clamped).toBe(0);
+  });
+
+  test('should handle missing config fields with defaults', () => {
+    const parsed = { displayName: 'Custom' };
+    const config = { ...DEFAULT_CONFIG, ...parsed };
+    expect(config.displayName).toBe('Custom');
+    expect(config.defaultOutputIds).toEqual([]);
+    expect(config.autoplayThreshold).toBe(0.002);
   });
 });
 
