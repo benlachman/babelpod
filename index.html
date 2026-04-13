@@ -300,16 +300,15 @@
           <label>Default Input</label>
           <select id="settingsDefaultInput"></select>
 
+          <label for="settingsDefaultVolume">Default Volume</label>
+          <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" />
+
           <label>Default Outputs</label>
           <div class="checkbox-list" id="settingsDefaultOutputs"></div>
 
-          <label>Default Volume</label>
-          <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" />
-          <span id="settingsDefaultVolumeText">50</span>
-
           <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem;">
-            <input type="checkbox" id="settingsAutoplayEnabled" style="transform: scale(1.2);" />
-            Autoplay on boot
+            <input type="checkbox" id="settingsAutoplayEnabled" style="transform: scale(1.2); accent-color: #fe0000;" />
+            Autoconnect on audio signal
           </label>
 
           <button class="save-button" onclick="saveSettings()">Save Settings</button>
@@ -600,7 +599,7 @@
         document.getElementById("settingsDisplayName").value = currentConfig.displayName || "";
         document.getElementById("settingsAutoplayEnabled").checked = currentConfig.autoplayEnabled || false;
         document.getElementById("settingsDefaultVolume").value = currentConfig.defaultVolume || 50;
-        document.getElementById("settingsDefaultVolumeText").textContent = String(currentConfig.defaultVolume || 50);
+        updateSettingsVolumeProgress();
 
         // Populate default input select
         const defaultInputSelect = document.getElementById("settingsDefaultInput");
@@ -628,9 +627,14 @@
         });
       }
 
-      document.getElementById("settingsDefaultVolume").addEventListener("input", (ev) => {
-        document.getElementById("settingsDefaultVolumeText").textContent = ev.target.value;
-      });
+      const settingsVolumeRange = document.getElementById("settingsDefaultVolume");
+      function updateSettingsVolumeProgress() {
+        const value = settingsVolumeRange.value;
+        const percentage = (value / 100) * 100;
+        settingsVolumeRange.style.setProperty("--progress", `${percentage}%`);
+      }
+      settingsVolumeRange.addEventListener("input", updateSettingsVolumeProgress);
+      updateSettingsVolumeProgress();
 
       function saveSettings() {
         const defaultOutputCheckboxes = document.getElementById("settingsDefaultOutputs").querySelectorAll("input[type=checkbox]");
