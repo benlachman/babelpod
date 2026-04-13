@@ -281,7 +281,10 @@
       <div class="radio-list" id="inputsList"></div>
 
       <label for="outputVolume">Volume</label>
-      <input type="range" min="0" max="100" value="50" id="outputVolume" />
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <input type="range" min="0" max="100" value="50" id="outputVolume" style="flex: 1;" />
+        <span id="volumeLabel" style="font-size: 0.85rem; color: #999; min-width: 35px; text-align: right;">50%</span>
+      </div>
 
       <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
         <label style="margin: 0;">Outputs</label>
@@ -314,14 +317,17 @@
           <label>Default Input</label>
           <select id="settingsDefaultInput"></select>
 
-          <label for="settingsDefaultVolume">Default Volume</label>
-          <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" />
-
           <label>Input Mode</label>
           <select id="settingsInputMode">
             <option value="phono">Phono (with preamp)</option>
             <option value="line">Line</option>
           </select>
+
+          <label for="settingsDefaultVolume">Default Volume</label>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" style="flex: 1;" />
+            <span id="settingsVolumeLabel" style="font-size: 0.85rem; color: #999; min-width: 35px; text-align: right;">50%</span>
+          </div>
 
           <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
             <label style="margin: 0;">Default Outputs</label>
@@ -352,6 +358,7 @@
         const max = rangeInput.max || 100;
         const percentage = (value / max) * 100;
         rangeInput.style.setProperty("--progress", `${percentage}%`);
+        document.getElementById("volumeLabel").textContent = value + "%";
       }
 
       rangeInput.addEventListener("input", updateSliderProgress);
@@ -521,7 +528,7 @@
         renderOutputsList(s.outputs);
         renderActiveOutputs();
         volumeRange.value = s.volume;
-        curVolumeText.textContent = String(s.volume);
+        curVolumeText.textContent = s.volume + "%";
         const selectedInputInfo = s.inputs.find(input => input.id === s.selectedInput);
         curInputText.textContent = selectedInputInfo ? `${selectedInputInfo.name} (${s.selectedInput})` : s.selectedInput;
         updateSliderProgress();
@@ -567,7 +574,7 @@
       });
       socket.on("volume", (d) => {
         currentVolume = d.value;
-        curVolumeText.textContent = String(d.value);
+        curVolumeText.textContent = d.value + "%";
         if (!isUserDraggingVolume && d.value !== lastEmittedVolume) {
           volumeRange.value = d.value;
           updateSliderProgress();
@@ -732,6 +739,7 @@
         const value = settingsVolumeRange.value;
         const percentage = (value / 100) * 100;
         settingsVolumeRange.style.setProperty("--progress", `${percentage}%`);
+        document.getElementById("settingsVolumeLabel").textContent = value + "%";
       }
       settingsVolumeRange.addEventListener("input", updateSettingsVolumeProgress);
       updateSettingsVolumeProgress();
