@@ -196,23 +196,24 @@
         margin-bottom: 0.5rem;
       }
       .autoplay-button {
-        width: 64px;
-        height: 64px;
+        width: 24px;
+        height: 24px;
         border-radius: 50%;
         border: none;
         cursor: pointer;
-        font-size: 1.5rem;
+        font-size: 0.85rem;
         color: white;
         transition: background 0.2s;
+        padding: 0;
+        line-height: 24px;
+        text-align: center;
       }
-      .autoplay-button.active {
-        background: #2e7d32;
-      }
+      .autoplay-button.active,
       .autoplay-button.paused {
-        background: #555;
+        background: transparent;
       }
       .autoplay-button:hover {
-        opacity: 0.85;
+        background: #333;
       }
       .autoplay-status {
         font-size: 0.85rem;
@@ -286,9 +287,9 @@
         <label style="margin: 0;">Outputs</label>
         <div id="autoplayControls" style="display: flex; align-items: center; gap: 8px;">
           <span id="autoplayStatusText" style="font-size: 0.8rem; color: #999;"></span>
-          <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()" style="width: 32px; height: 32px; font-size: 0.9rem;">&#9654;</button>
+          <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5C6 5.46 8.46 3 11.5 3S17 5.46 17 8.5c0 2.5-1.5 4-2.5 5.5s-1.5 3-1.5 5v1"/><path d="M3 21L21 3" stroke-width="2.5"/></svg></button>
         </div>
-        <span id="autoplayDisabledHint" style="display: none; font-size: 0.75rem; color: #666; cursor: pointer;" onclick="document.querySelector('.settings').open = true;">Enable autoconnect &rarr;</span>
+        <span id="autoplayDisabledHint" style="display: none; font-size: 0.75rem; color: #666; cursor: pointer;" onclick="document.querySelector('.settings').open = true;">Enable Autoconnect &rarr;</span>
       </div>
       <div class="checkbox-list" id="outputsList"></div>
 
@@ -412,7 +413,7 @@
             activeOutputsUl.appendChild(listItem);
           });
         } else if (currentConfig.autoplayEnabled && currentAutoplayState === "paused") {
-          summary.textContent = "Autoconnect paused";
+          summary.textContent = "None (Autoconnect paused)";
         } else if (currentConfig.autoplayEnabled && (currentConfig.defaultOutputIds || []).length > 0) {
           const defaultNames = (currentConfig.defaultOutputIds || []).map((outputId) => {
             const outputInfo = availableOutputsList.find(output => output.id === outputId);
@@ -499,6 +500,8 @@
         currentOutputs = s.selectedOutputs;
         currentVolume = s.volume;
         isOwner = (socket.id === s.sessionOwner);
+        if (s.config) currentConfig = s.config;
+        if (s.autoplayState) currentAutoplayState = s.autoplayState;
 
         renderInputsList();
         updateInputSelection();
@@ -510,16 +513,9 @@
         curInputText.textContent = selectedInputInfo ? `${selectedInputInfo.name} (${s.selectedInput})` : s.selectedInput;
         updateSliderProgress();
         updateOverlay();
-
-        if (s.config) {
-          currentConfig = s.config;
-          updateSettingsForm();
-          updateServerName();
-        }
-        if (s.autoplayState) {
-          currentAutoplayState = s.autoplayState;
-          updateAutoplayButton();
-        }
+        updateSettingsForm();
+        updateServerName();
+        updateAutoplayButton();
       });
 
       // Incremental updates
@@ -597,6 +593,7 @@
       socket.on("autoplay", (d) => {
         currentAutoplayState = d.state;
         updateAutoplayButton();
+        renderActiveOutputs();
       });
       socket.on("rmsLevel", (d) => {
         const indicators = inputsList.querySelectorAll(".input-level-indicator");
@@ -608,11 +605,16 @@
             return;
           }
           const isListening = currentAutoplayState !== "paused" && currentConfig.autoplayEnabled;
-          if (!isListening || d.level < 0.001) {
-            // Grey dot — no signal or not listening
+          if (!isListening) {
+            // Dimmed dot — not listening
             indicator.style.width = "6px";
             indicator.style.minWidth = "6px";
-            indicator.style.backgroundColor = "#444";
+            indicator.style.backgroundColor = "#2a2a2a";
+          } else if (d.level < 0.001) {
+            // Grey dot — listening, no signal
+            indicator.style.width = "6px";
+            indicator.style.minWidth = "6px";
+            indicator.style.backgroundColor = "#555";
           } else {
             // Green bar — proportional to signal level
             const widthPx = 6 + Math.min(80, (d.level / 0.3) * 80);
@@ -648,7 +650,14 @@
         const isPaused = currentAutoplayState === "paused";
 
         button.className = "autoplay-button " + (isPaused ? "paused" : "active");
-        button.innerHTML = isPaused ? "&#9654;" : "&#10074;&#10074;";
+        if (isPaused) {
+          // Ear with slash
+          button.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5C6 5.46 8.46 3 11.5 3S17 5.46 17 8.5c0 2.5-1.5 4-2.5 5.5s-1.5 3-1.5 5v1"/><path d="M3 21L21 3" stroke-width="2.5"/></svg>';
+        } else {
+          // Ear
+          button.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5C6 5.46 8.46 3 11.5 3S17 5.46 17 8.5c0 2.5-1.5 4-2.5 5.5s-1.5 3-1.5 5v1"/></svg>';
+        }
+        button.style.opacity = isPaused ? "0.5" : "1";
 
         const labels = {
           paused: "Autoconnect paused",
