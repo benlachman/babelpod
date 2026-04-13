@@ -27,3 +27,11 @@ The Burr-Brown/TI USB Audio CODEC has no ALSA capture volume control — gain is
 - Insert a `sox` process (or ALSA softvol plugin) in the `arecord` → `duplicator` pipeline to apply gain
 - Add an input gain slider to the UI (web + SwiftUI)
 - Consider adding a signal level meter to the UI so users can visually confirm input levels
+
+## iOS App: Unused ServicePickerView
+
+`BabelUI/ServicePickerView.swift` defines a service picker component that is not integrated into the app. Either integrate it into the connection flow or remove it to reduce dead code.
+
+## iOS App: Error History
+
+Server errors and status messages are shown as transient toasts. There is no persistent error log in the app — once dismissed, messages are gone. Consider adding an error history view for debugging.
