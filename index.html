@@ -283,6 +283,10 @@
         }
       }
       takeOverBtn.addEventListener("click", () => {
+        // Reset echo tracking so we fully accept server state after takeover
+        lastEmittedVolume = null;
+        lastEmittedOutputs = null;
+        lastEmittedInput = null;
         socket.emit("takeover");
       });
 
@@ -389,6 +393,10 @@
       });
       socket.on("session", (d) => {
         isOwner = (socket.id === d.owner);
+        // Reset echo tracking on ownership change to fully sync from server
+        lastEmittedVolume = null;
+        lastEmittedOutputs = null;
+        lastEmittedInput = null;
         updateOverlay();
       });
       socket.on("status", (d) => { showStatus(d.message); });

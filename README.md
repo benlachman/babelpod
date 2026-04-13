@@ -216,6 +216,14 @@ sudo systemctl start babelpod
   ```
   
 
+### API Documentation
+
+See [API.md](API.md) for the complete Socket.IO API reference (v1). This documents all events, payload shapes, session ownership, and echo detection — everything needed to build a new client.
+
+### Backlog
+
+See [BACKLOG.md](BACKLOG.md) for planned features and improvements.
+
 ### Testing
 
 See [TESTING.md](TESTING.md) for a comprehensive testing guide including manual test checklists and expected behavior documentation.
