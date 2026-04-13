@@ -18,6 +18,52 @@ const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
+const path = require('path');
+
+// =======================
+// 1b) Instance configuration
+// =======================
+const CONFIG_PATH = path.join(__dirname, 'babelpod.config.json');
+
+const DEFAULT_CONFIG = {
+  displayName: hostname().replace('.local', ''),
+  defaultInputId: null,
+  defaultOutputIds: [],
+  defaultVolume: 50,
+  autoplayEnabled: false,
+  autoplayThreshold: 0.002
+};
+
+let config = { ...DEFAULT_CONFIG };
+
+function loadConfig() {
+  try {
+    const data = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const parsed = JSON.parse(data);
+    config = { ...DEFAULT_CONFIG, ...parsed };
+    console.log("Loaded config:", config);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log("No config file found, using defaults");
+    } else {
+      console.error("Error reading config file, using defaults:", error.message);
+    }
+    config = { ...DEFAULT_CONFIG };
+  }
+}
+
+function saveConfig(partial) {
+  config = { ...config, ...partial };
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    console.log("Config saved:", config);
+  } catch (error) {
+    console.error("Error saving config:", error.message);
+  }
+  io.emit('config', config);
+}
+
+loadConfig();
 
 // Bluetooth support - optional, may not be available on all systems
 let blue = null;
@@ -56,6 +102,168 @@ DiscardSink.prototype._write = function (_chunk, _enc, cb) {
 const fallbackSink = new DiscardSink();
 
 // =======================
+// 4b) RMS audio level monitor
+// =======================
+class RmsMonitorTransform extends stream.Transform {
+  constructor() {
+    super();
+    this.currentRms = 0;
+    this.chunkCount = 0;
+  }
+
+  _transform(chunk, encoding, callback) {
+    this.chunkCount++;
+    // Process every 4th chunk for efficiency (~5-10 readings/sec)
+    if (this.chunkCount % 4 === 0) {
+      const sampleCount = Math.floor(chunk.length / 2);
+      let sumOfSquares = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const sample = chunk.readInt16LE(i * 2) / 32768;
+        sumOfSquares += sample * sample;
+      }
+      this.currentRms = Math.sqrt(sumOfSquares / sampleCount);
+      this.emit('rms', this.currentRms);
+
+      // Throttled emission to clients (~4Hz)
+      const now = Date.now();
+      if (now - lastRmsEmitTime >= 250) {
+        lastRmsEmitTime = now;
+        io.emit('rmsLevel', { level: this.currentRms });
+      }
+    }
+    callback(null, chunk);
+  }
+}
+
+let rmsMonitor = new RmsMonitorTransform();
+let lastRmsEmitTime = 0;
+
+// =======================
+// 4c) Autoplay state machine
+// =======================
+const AUTOPLAY_DETECT_SUSTAIN_MS = 250;
+const AUTOPLAY_SILENCE_TIMEOUT_MS = 300000; // 5 minutes
+
+let autoplayState = {
+  state: config.autoplayEnabled ? 'idle' : 'paused',
+  detectingSince: null,
+  silenceSince: null,
+};
+
+function emitAutoplayState() {
+  io.emit('autoplay', { state: autoplayState.state });
+}
+
+function activateDefaultOutputs() {
+  if (config.defaultOutputIds.length === 0) return;
+
+  // Ensure default input is selected
+  if (config.defaultInputId && currentInput !== config.defaultInputId) {
+    // Input switching is handled elsewhere; for autoplay we assume it's already set at startup
+  }
+
+  volume = config.defaultVolume || 50;
+  const validOutputIds = config.defaultOutputIds.filter(outputId =>
+    unifiedOutputs.some(output => output.uiId === outputId)
+  );
+  if (validOutputIds.length > 0) {
+    syncOutputs(validOutputIds);
+    io.emit('output', { ids: validOutputIds });
+    io.emit('volume', { value: volume });
+    io.emit('status', { message: 'Autoplay activated' });
+    console.log("Autoplay: activated default outputs:", validOutputIds);
+  }
+}
+
+function deactivateOutputs() {
+  syncOutputs([]);
+  io.emit('output', { ids: [] });
+  io.emit('status', { message: 'Autoplay: speakers released after silence' });
+  console.log("Autoplay: deactivated outputs after silence timeout");
+}
+
+function tickAutoplay(rmsLevel) {
+  const threshold = config.autoplayThreshold || 0.002;
+  const now = Date.now();
+
+  switch (autoplayState.state) {
+    case 'paused':
+      return; // Do nothing
+
+    case 'idle':
+      if (rmsLevel > threshold) {
+        autoplayState.state = 'detecting';
+        autoplayState.detectingSince = now;
+        emitAutoplayState();
+      }
+      break;
+
+    case 'detecting':
+      if (rmsLevel <= threshold) {
+        // Signal dropped — false trigger
+        autoplayState.state = 'idle';
+        autoplayState.detectingSince = null;
+        emitAutoplayState();
+      } else if (now - autoplayState.detectingSince >= AUTOPLAY_DETECT_SUSTAIN_MS) {
+        // Sustained signal — activate!
+        autoplayState.state = 'playing';
+        autoplayState.detectingSince = null;
+        emitAutoplayState();
+        activateDefaultOutputs();
+      }
+      break;
+
+    case 'playing':
+      if (rmsLevel <= threshold) {
+        autoplayState.state = 'silence';
+        autoplayState.silenceSince = now;
+        emitAutoplayState();
+      }
+      break;
+
+    case 'silence':
+      if (rmsLevel > threshold) {
+        // Sound returned
+        autoplayState.state = 'playing';
+        autoplayState.silenceSince = null;
+        emitAutoplayState();
+      } else if (now - autoplayState.silenceSince >= AUTOPLAY_SILENCE_TIMEOUT_MS) {
+        // Extended silence — release speakers
+        autoplayState.state = 'idle';
+        autoplayState.silenceSince = null;
+        emitAutoplayState();
+        deactivateOutputs();
+      }
+      break;
+  }
+}
+
+function setAutoplayState(newState) {
+  if (newState === 'paused') {
+    autoplayState.state = 'paused';
+    autoplayState.detectingSince = null;
+    autoplayState.silenceSince = null;
+    // Master kill switch — stop all outputs
+    syncOutputs([]);
+    io.emit('output', { ids: [] });
+    emitAutoplayState();
+    console.log("Autoplay: paused (all outputs stopped)");
+  } else if (newState === 'playing') {
+    autoplayState.state = 'idle'; // Enter idle, let RMS detection handle the rest
+    autoplayState.detectingSince = null;
+    autoplayState.silenceSince = null;
+    emitAutoplayState();
+    console.log("Autoplay: armed and listening");
+  }
+}
+
+// Hook RMS readings into autoplay state machine
+function wireRmsMonitor() {
+  rmsMonitor.on('rms', tickAutoplay);
+}
+wireRmsMonitor();
+
+// =======================
 // 5) Main audio duplicator
 // =======================
 const duplicator = new stream.PassThrough({ highWaterMark: 65536 });
@@ -91,13 +299,14 @@ function FromVoid() {
 }
 FromVoid.prototype._read = function () { };
 let inputStream = new FromVoid();
-inputStream.pipe(duplicator);
+rmsMonitor.pipe(duplicator);
+inputStream.pipe(rmsMonitor);
 
 // Clean up current input, stop processes
 function cleanupCurrentInput() {
   try {
     if (inputStream) {
-      inputStream.unpipe(duplicator);
+      inputStream.unpipe(rmsMonitor);
       inputStream = null;
     }
     if (arecordInstance) {
@@ -153,7 +362,10 @@ function startArecordForDevice(devId, isRetry = false) {
     inputStream.on('error', (error) => {
       console.error(`Error with input stream for ${devId}:`, error);
     });
-    inputStream.pipe(duplicator);
+    rmsMonitor = new RmsMonitorTransform();
+    wireRmsMonitor();
+    rmsMonitor.pipe(duplicator);
+    inputStream.pipe(rmsMonitor);
 
     if (isRetry) {
       busyRetryAttempts = 0;
@@ -259,7 +471,7 @@ function setupArecordHandlers(devId, isRetry = false) {
 // =======================
 // 7) Volume & outputs
 // =======================
-let volume = 50;
+let volume = config.defaultVolume || 50;
 let selectedOutputs = [];
 
 let availablePcmOutputs = [];
@@ -363,7 +575,9 @@ function buildStatePayload() {
     outputs: buildCleanOutputs(),
     selectedInput: currentInput,
     selectedOutputs,
-    volume
+    volume,
+    config,
+    autoplayState: autoplayState.state
   };
 }
 
@@ -381,9 +595,12 @@ function updateAllInputs() {
 if (!process.env.DISABLE_PCM) {
   console.log("PCM device scanning enabled");
   scanPcmDevices();
-  // Auto-select first available input on startup
+  // Auto-select input on startup: prefer config default, then first available
   if (currentInput === "void" && availablePcmInputs.length > 0) {
-    const autoDevId = availablePcmInputs[0].id;
+    const configuredInput = config.defaultInputId && availablePcmInputs.some(d => d.id === config.defaultInputId)
+      ? config.defaultInputId
+      : availablePcmInputs[0].id;
+    const autoDevId = configuredInput;
     console.log("Auto-selecting input:", autoDevId);
     cleanupCurrentInput();
     currentInput = autoDevId;
@@ -395,7 +612,10 @@ if (!process.env.DISABLE_PCM) {
     inputStream.on('error', (error) => {
       console.error(`Error with auto-selected input stream for ${autoDevId}:`, error);
     });
-    inputStream.pipe(duplicator);
+    rmsMonitor = new RmsMonitorTransform();
+    wireRmsMonitor();
+    rmsMonitor.pipe(duplicator);
+    inputStream.pipe(rmsMonitor);
   }
   setInterval(scanPcmDevices, 10000);
 } else {
@@ -550,20 +770,26 @@ browser.start();
 let advertise = null;
 function advertiseService() {
   try {
-    // use random port if needed, otherwise use 3000
     const p = Number(process.env.BABEL_PORT || 3000);
     advertise = mdns.createAdvertisement(mdns.tcp('babelpod'), p, {
-      name: hostname().replace('.local', ''),
+      name: config.displayName || hostname().replace('.local', ''),
       txt: {
         info: "A BabelPod audio server"
       }
     });
     console.log("Advertising BabelPod service:", advertise);
-
     advertise.start();
   } catch (err) {
     console.log("Error advertising BabelPod service:", err);
   }
+}
+function restartAdvertisement() {
+  try {
+    if (advertise) advertise.stop();
+  } catch (err) {
+    console.error("Error stopping advertisement:", err);
+  }
+  advertiseService();
 }
 advertiseService();
 
@@ -748,7 +974,10 @@ io.on('connection', socket => {
 
       if (devId === "void") {
         inputStream = new FromVoid();
-        inputStream.pipe(duplicator);
+        rmsMonitor = new RmsMonitorTransform();
+        wireRmsMonitor();
+        rmsMonitor.pipe(duplicator);
+        inputStream.pipe(rmsMonitor);
         io.emit('input', { id: currentInput });
         io.emit('status', { message: `Input switched to ${currentInput}` });
         isManualInputSwitch = false;
@@ -826,6 +1055,38 @@ io.on('connection', socket => {
       console.error("Error changing volume:", e);
       io.emit('serverError', { message: `Failed to change volume: ${e.message}` });
     }
+  });
+
+  socket.on('setConfig', (data) => {
+    if (socket.id !== sessionOwner) return;
+    if (!data || typeof data !== 'object') return;
+
+    console.log("Updating config:", data);
+    const oldDisplayName = config.displayName;
+
+    // Only allow known fields
+    const allowedFields = ['displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'autoplayEnabled', 'autoplayThreshold'];
+    const filtered = {};
+    for (const key of allowedFields) {
+      if (key in data) filtered[key] = data[key];
+    }
+
+    saveConfig(filtered);
+
+    if (config.displayName !== oldDisplayName) {
+      restartAdvertisement();
+    }
+
+    io.emit('status', { message: 'Settings saved' });
+  });
+
+  socket.on('setAutoplay', (data) => {
+    if (socket.id !== sessionOwner) return;
+    const newState = data?.state;
+    if (newState !== 'playing' && newState !== 'paused') return;
+
+    console.log("Setting autoplay state:", newState);
+    setAutoplayState(newState);
   });
 
   socket.on('disconnect', () => {
