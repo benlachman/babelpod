@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const stream = require('stream');
 const util = require('util');
-const spawn = require('child_process').spawn;
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
@@ -76,10 +76,13 @@ duplicator.on('error', e => {
 let currentInput = "void";
 let arecordInstance = null;
 let isManualInputSwitch = false; // Track if input switch was intentional
-let isInputSwitchInProgress = false; // Guard against concurrent BT switch timeouts
 let inputRestartAttempts = 0;
 const MAX_INPUT_RESTART_ATTEMPTS = 3;
 const INPUT_RESTART_DELAY = 2000; // 2 seconds
+const CLEANUP_DELAY = 500; // Delay after cleanup before starting new process
+let busyRetryAttempts = 0;
+const MAX_BUSY_RETRY_ATTEMPTS = 5;
+const BUSY_RETRY_BASE_DELAY = 200; // Base delay for busy retry (exponential backoff)
 
 util.inherits(FromVoid, stream.Readable);
 function FromVoid() {
@@ -98,7 +101,18 @@ function cleanupCurrentInput() {
       inputStream = null;
     }
     if (arecordInstance) {
-      arecordInstance.kill();
+      try {
+        arecordInstance.kill('SIGTERM');
+        const instance = arecordInstance;
+        setTimeout(() => {
+          if (instance && !instance.killed) {
+            console.log('arecord did not terminate gracefully, force killing...');
+            instance.kill('SIGKILL');
+          }
+        }, 100);
+      } catch (e) {
+        console.error("Error killing arecord instance:", e);
+      }
       arecordInstance = null;
     }
   } catch (e) {
@@ -106,34 +120,68 @@ function cleanupCurrentInput() {
   }
 }
 
+// Kill any orphaned arecord processes for the specified device
+function killOrphanedArecord(devId) {
+  if (devId === "void" || !devId) return;
+  try {
+    const result = execSync(`pgrep -f "arecord.*${devId}"`, { encoding: 'utf8' }).trim();
+    if (result) {
+      console.log(`Found orphaned arecord processes for ${devId}, terminating: ${result}`);
+      execSync(`pkill -9 -f "arecord.*${devId}"`);
+    }
+  } catch (e) {
+    // pgrep returns non-zero if no processes found, which is fine
+    if (e.status !== 1) {
+      console.error(`Error checking for orphaned arecord processes: ${e.message}`);
+    }
+  }
+}
+
+// Start arecord for a specific device with orphan cleanup
+function startArecordForDevice(devId, isRetry = false) {
+  if (devId === "void") return;
+  try {
+    console.log(`Starting arecord for device: ${devId}${isRetry ? ' (retry)' : ''}`);
+    killOrphanedArecord(devId);
+
+    arecordInstance = spawn("arecord", [
+      "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100"
+    ]);
+
+    setupArecordHandlers(devId, isRetry);
+    inputStream = arecordInstance.stdout;
+    inputStream.on('error', (error) => {
+      console.error(`Error with input stream for ${devId}:`, error);
+    });
+    inputStream.pipe(duplicator);
+
+    if (isRetry) {
+      busyRetryAttempts = 0;
+      isManualInputSwitch = false;
+    } else {
+      busyRetryAttempts = 0;
+    }
+    io.emit('input', { id: currentInput });
+    io.emit('status', { message: `Input ${isRetry ? 'reconnected' : 'switched'} to ${currentInput}` });
+    console.log(`Successfully started arecord for device: ${devId}`);
+  } catch (e) {
+    console.error(`Failed to start arecord for device ${devId}:`, e);
+    io.emit('serverError', { message: `Failed to start input: ${e.message}` });
+  }
+}
+
 // Restart input device (for automatic recovery)
 function restartInputDevice(devId, delayMs = 0) {
   if (devId === "void") return;
-  
+
   setTimeout(() => {
     console.log(`Attempting to restart input device: ${devId} (attempt ${inputRestartAttempts + 1}/${MAX_INPUT_RESTART_ATTEMPTS})`);
-    
     try {
       cleanupCurrentInput();
-      
-      arecordInstance = spawn("arecord", [
-        "-D", devId,
-        "-c", "2",
-        "-f", "S16_LE",
-        "-r", "44100"
-      ]);
-      
-      setupArecordHandlers(devId);
-      
-      inputStream = arecordInstance.stdout;
-      inputStream.on('error', (error) => {
-        console.error(`Error with input stream for ${devId}:`, error);
-      });
-      inputStream.pipe(duplicator);
-      
-      inputRestartAttempts++;
-      io.emit('status', { message: `Input device reconnected: ${devId}` });
-      console.log(`Successfully restarted input device: ${devId}`);
+      setTimeout(() => {
+        startArecordForDevice(devId, true);
+        inputRestartAttempts++;
+      }, CLEANUP_DELAY);
     } catch (e) {
       console.error(`Failed to restart input device ${devId}:`, e);
       io.emit('serverError', { message: `Failed to reconnect input: ${e.message}` });
@@ -142,18 +190,37 @@ function restartInputDevice(devId, delayMs = 0) {
 }
 
 // Setup arecord process event handlers
-function setupArecordHandlers(devId) {
+function setupArecordHandlers(devId, isRetry = false) {
   if (!arecordInstance) return;
-  
+
   arecordInstance.on('error', (error) => {
     console.error(`Error with arecord process for ${devId}:`, error);
     io.emit('serverError', { message: `Input device error: ${error.message}` });
   });
-  
+
   arecordInstance.stderr.on('data', (data) => {
     const msg = data.toString();
     console.error(`arecord stderr for ${devId}:`, msg);
-    // Only report critical errors to UI
+
+    // Handle "Device or resource busy" with retry
+    if (msg.includes('Device or resource busy') || msg.includes('audio open error')) {
+      console.log(`Device busy detected for ${devId}, will retry after cleanup`);
+      if (busyRetryAttempts < MAX_BUSY_RETRY_ATTEMPTS) {
+        busyRetryAttempts++;
+        const delay = BUSY_RETRY_BASE_DELAY * Math.pow(2, busyRetryAttempts - 1);
+        console.log(`Busy retry ${busyRetryAttempts}/${MAX_BUSY_RETRY_ATTEMPTS} in ${delay}ms`);
+        cleanupCurrentInput();
+        setTimeout(() => {
+          startArecordForDevice(devId, true);
+        }, delay);
+      } else {
+        console.error(`Max busy retries reached for ${devId}`);
+        io.emit('serverError', { message: `Input device busy after ${MAX_BUSY_RETRY_ATTEMPTS} retries` });
+        busyRetryAttempts = 0;
+      }
+      return;
+    }
+
     if (msg.includes('error') || msg.includes('failed')) {
       io.emit('serverError', { message: `Input error: ${msg.substring(0, 100)}` });
     }
@@ -673,92 +740,47 @@ io.on('connection', socket => {
     try {
       // Mark this as a manual switch to prevent auto-restart
       isManualInputSwitch = true;
-      inputRestartAttempts = 0; // Reset restart counter on manual switch
-      
+      inputRestartAttempts = 0;
+      busyRetryAttempts = 0;
+
       cleanupCurrentInput();
       currentInput = devId;
-      
+
       if (devId === "void") {
         inputStream = new FromVoid();
         inputStream.pipe(duplicator);
         io.emit('input', { id: currentInput });
         io.emit('status', { message: `Input switched to ${currentInput}` });
+        isManualInputSwitch = false;
       } else if (devId.includes('bluealsa') && blue) {
-        // Handle Bluetooth input
         const btDevice = availableBluetoothInputs.find(d => d.id === devId);
         if (btDevice && !btDevice.connected) {
-          // Connect to Bluetooth device if not connected
           io.emit('status', { message: `Connecting to Bluetooth device ${btDevice.name}...` });
           try {
-            isInputSwitchInProgress = true;
             blue.connect(btDevice.mac);
-            // Wait for connection before starting arecord
-            const switchDevId = devId; // Capture for closure
+            const switchDevId = devId;
             setTimeout(() => {
-              isInputSwitchInProgress = false;
-              // Bail if user switched to a different input during the wait
               if (currentInput !== switchDevId) return;
-              if (blue.info) {
-                blue.info(btDevice.mac);
-              }
-              arecordInstance = spawn("arecord", [
-                "-D", switchDevId,
-                "-c", "2",
-                "-f", "S16_LE",
-                "-r", "44100"
-              ]);
-
-              setupArecordHandlers(switchDevId);
-              inputStream = arecordInstance.stdout;
-              inputStream.on('error', (error) => {
-                console.error(`Error with Bluetooth input stream for ${switchDevId}:`, error);
-              });
-              inputStream.pipe(duplicator);
-              io.emit('input', { id: currentInput });
-              io.emit('status', { message: `Input switched to ${btDevice.name}` });
-            }, 5000); // 5 second delay for BT connection
-            return; // Exit early, will emit after timeout
+              if (blue.info) blue.info(btDevice.mac);
+              setTimeout(() => {
+                startArecordForDevice(switchDevId, false);
+              }, CLEANUP_DELAY);
+            }, 5000);
+            return;
           } catch (e) {
             console.error("Error connecting to Bluetooth device:", e);
             io.emit('serverError', { message: `Failed to connect to Bluetooth: ${e.message}` });
+            isManualInputSwitch = false;
           }
         } else {
-          // Already connected, start arecord directly
-          arecordInstance = spawn("arecord", [
-            "-D", devId,
-            "-c", "2",
-            "-f", "S16_LE",
-            "-r", "44100"
-          ]);
-          
-          setupArecordHandlers(devId);
-          inputStream = arecordInstance.stdout;
-          inputStream.on('error', (error) => {
-            console.error(`Error with Bluetooth input stream for ${devId}:`, error);
-          });
-          inputStream.pipe(duplicator);
-          io.emit('input', { id: currentInput });
-          io.emit('status', { message: `Input switched to ${currentInput}` });
+          setTimeout(() => {
+            startArecordForDevice(devId, false);
+          }, CLEANUP_DELAY);
         }
       } else {
-        // Regular PCM input
-        arecordInstance = spawn("arecord", [
-          "-D", devId,
-          "-c", "2",
-          "-f", "S16_LE",
-          "-r", "44100"
-        ]);
-        
-        // Setup all event handlers
-        setupArecordHandlers(devId);
-        
-        inputStream = arecordInstance.stdout;
-        inputStream.on('error', (error) => {
-          console.error(`Error with input stream for ${devId}:`, error);
-        });
-        inputStream.pipe(duplicator);
-        io.emit('input', { id: currentInput });
-        io.emit('status', { message: `Input switched to ${currentInput}` });
+        setTimeout(() => {
+          startArecordForDevice(devId, false);
+        }, CLEANUP_DELAY);
       }
       
     } catch (e) {
