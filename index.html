@@ -419,7 +419,7 @@
             const outputInfo = availableOutputsList.find(output => output.id === outputId);
             return outputInfo ? outputInfo.name : outputId;
           });
-          summary.textContent = "Autoconnect: " + defaultNames.join(", ");
+          summary.textContent = "None (Autoconnect: " + defaultNames.join(", ") + ")";
         } else {
           summary.textContent = "None";
         }
