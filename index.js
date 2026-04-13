@@ -521,7 +521,7 @@ function scanPcmDevices() {
 function buildUnifiedOutputs() {
   let local = availablePcmOutputs.map(o => ({
     uiId: o.id,
-    name: o.name + ' (Output)',
+    name: o.name + ' - Output',
     isStereo: false,
     devices: [{ localId: o.id }]
   }));
@@ -552,14 +552,14 @@ function buildUnifiedOutputs() {
       const d = arr[0];
       air.push({
         uiId: 'air:' + d.name,
-        name: (d.name || d.host) + ' (AirPlay)',
+        name: (d.name || d.host) + ' - AirPlay',
         isStereo: false,
         devices: [{ host: d.host, port: d.port, isStereo: false }]
       });
     } else {
       air.push({
         uiId: 'airpair:' + stereoName,
-        name: stereoName + ' (AirPlay Stereo)',
+        name: stereoName + ' - AirPlay Stereo',
         isStereo: true,
         devices: arr.map(d => ({ host: d.host, port: d.port, isStereo: true }))
       });

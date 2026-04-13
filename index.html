@@ -142,9 +142,12 @@
       .info {
         background: #1f1f1f;
         margin-top: 1rem;
-        padding: 1rem;
+        padding: 0.5rem 0.75rem;
         border-radius: 6px;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
+      }
+      .info p {
+        margin: 0.25rem 0;
       }
 
       /* Session overlay */
@@ -295,8 +298,10 @@
         <p>Volume: <span id="curVolumeText"></span></p>
         <p>Active Outputs: <span id="activeOutputsSummary"></span></p>
         <ul id="activeOutputs"></ul>
-        <p id="statusMessage" style="color: #4CAF50; margin-top: 1rem;"></p>
-        <p id="errorMessage" style="color: #f44336; margin-top: 0.5rem;"></p>
+        <div style="min-height: 1.5rem; margin-top: 0.5rem;">
+          <p id="statusMessage" style="color: #4CAF50; margin: 0;"></p>
+          <p id="errorMessage" style="color: #f44336; margin: 0;"></p>
+        </div>
       </div>
 
       <details class="settings">
@@ -314,8 +319,8 @@
           <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
             <label style="margin: 0;">Default Outputs</label>
             <label style="display: flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.85rem; color: #aaa;">
-              Autoconnect
               <input type="checkbox" id="settingsAutoplayEnabled" style="transform: scale(1.1); accent-color: #fe0000;" />
+              Autoconnect on audio signal
             </label>
           </div>
           <div class="checkbox-list" id="settingsDefaultOutputs"></div>
@@ -406,15 +411,12 @@
             listItem.textContent = outputInfo ? outputInfo.name : outputId;
             activeOutputsUl.appendChild(listItem);
           });
-        } else if (currentConfig.autoplayEnabled && currentAutoplayState !== "paused") {
-          summary.textContent = "None — autoconnect will route to:";
-          (currentConfig.defaultOutputIds || []).forEach((outputId) => {
-            let listItem = document.createElement("li");
-            listItem.style.color = "#888";
+        } else if (currentConfig.autoplayEnabled && (currentConfig.defaultOutputIds || []).length > 0) {
+          const defaultNames = (currentConfig.defaultOutputIds || []).map((outputId) => {
             const outputInfo = availableOutputsList.find(output => output.id === outputId);
-            listItem.textContent = outputInfo ? outputInfo.name : outputId;
-            activeOutputsUl.appendChild(listItem);
+            return outputInfo ? outputInfo.name : outputId;
           });
+          summary.textContent = "None (autoconnect enabled: " + defaultNames.join(", ") + ")";
         } else {
           summary.textContent = "None";
         }
