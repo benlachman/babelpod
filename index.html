@@ -411,12 +411,14 @@
             listItem.textContent = outputInfo ? outputInfo.name : outputId;
             activeOutputsUl.appendChild(listItem);
           });
+        } else if (currentConfig.autoplayEnabled && currentAutoplayState === "paused") {
+          summary.textContent = "Autoconnect paused";
         } else if (currentConfig.autoplayEnabled && (currentConfig.defaultOutputIds || []).length > 0) {
           const defaultNames = (currentConfig.defaultOutputIds || []).map((outputId) => {
             const outputInfo = availableOutputsList.find(output => output.id === outputId);
             return outputInfo ? outputInfo.name : outputId;
           });
-          summary.textContent = "None (autoconnect enabled: " + defaultNames.join(", ") + ")";
+          summary.textContent = "Autoconnect: " + defaultNames.join(", ");
         } else {
           summary.textContent = "None";
         }
