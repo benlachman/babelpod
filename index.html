@@ -264,21 +264,22 @@
   <body>
     <header id="serverName">BabelPod</header>
     <div class="container">
-      <div class="autoplay-section">
-        <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()">&#9654;</button>
-        <div class="autoplay-status" id="autoplayStatusText">Paused</div>
-        <div class="rms-bar-container">
-          <div class="rms-bar" id="rmsBar"></div>
-        </div>
-      </div>
-
       <label>Input Device</label>
       <div class="radio-list" id="inputsList"></div>
 
       <label for="outputVolume">Volume</label>
       <input type="range" min="0" max="100" value="50" id="outputVolume" />
 
-      <label>Outputs</label>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
+        <label style="margin: 0;">Outputs</label>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span id="autoplayStatusText" style="font-size: 0.8rem; color: #999;"></span>
+          <div class="rms-bar-container" style="width: 40px; margin: 0;">
+            <div class="rms-bar" id="rmsBar"></div>
+          </div>
+          <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()" style="width: 32px; height: 32px; font-size: 0.9rem;">&#9654;</button>
+        </div>
+      </div>
       <div class="checkbox-list" id="outputsList"></div>
 
       <div class="info">
