@@ -175,11 +175,103 @@
       #sessionOverlay button:hover {
         background: #666;
       }
+
+      /* Autoplay controls */
+      .autoplay-section {
+        text-align: center;
+        padding: 1rem 0;
+        border-bottom: 1px solid #333;
+        margin-bottom: 0.5rem;
+      }
+      .autoplay-button {
+        width: 64px;
+        height: 64px;
+        border-radius: 50%;
+        border: none;
+        cursor: pointer;
+        font-size: 1.5rem;
+        color: white;
+        transition: background 0.2s;
+      }
+      .autoplay-button.active {
+        background: #2e7d32;
+      }
+      .autoplay-button.paused {
+        background: #555;
+      }
+      .autoplay-button:hover {
+        opacity: 0.85;
+      }
+      .autoplay-status {
+        font-size: 0.85rem;
+        color: #999;
+        margin-top: 0.5rem;
+      }
+      .rms-bar-container {
+        height: 4px;
+        background: #333;
+        border-radius: 2px;
+        margin-top: 0.75rem;
+        overflow: hidden;
+      }
+      .rms-bar {
+        height: 100%;
+        background: linear-gradient(to right, #4CAF50, #8BC34A);
+        width: 0%;
+        transition: width 0.1s linear;
+        border-radius: 2px;
+      }
+
+      /* Settings section */
+      details.settings {
+        margin-top: 1rem;
+      }
+      details.settings summary {
+        cursor: pointer;
+        font-weight: 500;
+        color: #aaa;
+        padding: 0.5rem 0;
+      }
+      details.settings .settings-content {
+        padding: 0.5rem 0;
+      }
+      details.settings input[type="text"],
+      details.settings select {
+        width: 100%;
+        padding: 0.5rem;
+        background: #2a2a2a;
+        border: 1px solid #444;
+        border-radius: 4px;
+        color: #ddd;
+        font-size: 0.9rem;
+        box-sizing: border-box;
+      }
+      details.settings .save-button {
+        margin-top: 1rem;
+        padding: 0.5rem 1.5rem;
+        background: #2e7d32;
+        border: none;
+        border-radius: 4px;
+        color: white;
+        cursor: pointer;
+        font-size: 0.9rem;
+      }
+      details.settings .save-button:hover {
+        background: #388e3c;
+      }
     </style>
   </head>
   <body>
-    <header>BabelPod</header>
+    <header id="serverName">BabelPod</header>
     <div class="container">
+      <div class="autoplay-section">
+        <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()">&#9654;</button>
+        <div class="autoplay-status" id="autoplayStatusText">Paused</div>
+        <div class="rms-bar-container">
+          <div class="rms-bar" id="rmsBar"></div>
+        </div>
+      </div>
+
       <label>Input Device</label>
       <div class="radio-list" id="inputsList"></div>
 
@@ -197,6 +289,31 @@
         <p id="statusMessage" style="color: #4CAF50; margin-top: 1rem;"></p>
         <p id="errorMessage" style="color: #f44336; margin-top: 0.5rem;"></p>
       </div>
+
+      <details class="settings">
+        <summary>Settings</summary>
+        <div class="settings-content">
+          <label>Display Name</label>
+          <input type="text" id="settingsDisplayName" />
+
+          <label>Default Input</label>
+          <select id="settingsDefaultInput"></select>
+
+          <label>Default Outputs</label>
+          <div class="checkbox-list" id="settingsDefaultOutputs"></div>
+
+          <label>Default Volume</label>
+          <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" />
+          <span id="settingsDefaultVolumeText">50</span>
+
+          <label style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem;">
+            <input type="checkbox" id="settingsAutoplayEnabled" style="transform: scale(1.2);" />
+            Autoplay on boot
+          </label>
+
+          <button class="save-button" onclick="saveSettings()">Save Settings</button>
+        </div>
+      </details>
     </div>
 
     <div id="sessionOverlay">
@@ -230,6 +347,9 @@
       let lastEmittedVolume = null;
       let lastEmittedOutputs = null;
       let lastEmittedInput = null;
+      let currentConfig = {};
+      let currentAutoplayState = "paused";
+      let availableOutputsList = [];
 
       const inputsList = document.getElementById("inputsList");
       const volumeRange = document.getElementById("outputVolume");
@@ -336,6 +456,7 @@
       // Full state bundle on connection
       socket.on("state", (s) => {
         availableInputsList = s.inputs;
+        availableOutputsList = s.outputs;
         currentInput = s.selectedInput;
         currentOutputs = s.selectedOutputs;
         currentVolume = s.volume;
@@ -350,6 +471,16 @@
         curInputText.textContent = s.selectedInput;
         updateSliderProgress();
         updateOverlay();
+
+        if (s.config) {
+          currentConfig = s.config;
+          updateSettingsForm();
+          updateServerName();
+        }
+        if (s.autoplayState) {
+          currentAutoplayState = s.autoplayState;
+          updateAutoplayButton();
+        }
       });
 
       // Incremental updates
@@ -358,6 +489,7 @@
         renderInputsList();
       });
       socket.on("outputs", (d) => {
+        availableOutputsList = d.outputs;
         renderOutputsList(d.outputs);
         renderActiveOutputs();
       });
@@ -415,6 +547,105 @@
       socket.on("connect_error", (error) => {
         showError("Connection error: " + error.message);
       });
+
+      // Config and autoplay events
+      socket.on("config", (c) => {
+        currentConfig = c;
+        updateSettingsForm();
+        updateServerName();
+      });
+      socket.on("autoplay", (d) => {
+        currentAutoplayState = d.state;
+        updateAutoplayButton();
+      });
+      socket.on("rmsLevel", (d) => {
+        const rmsBar = document.getElementById("rmsBar");
+        // Scale RMS for visibility (0-0.3 range mapped to 0-100%)
+        const widthPercent = Math.min(100, (d.level / 0.3) * 100);
+        rmsBar.style.width = widthPercent + "%";
+      });
+
+      // Autoplay controls
+      function toggleAutoplay() {
+        const newState = currentAutoplayState === "paused" ? "playing" : "paused";
+        socket.emit("setAutoplay", { state: newState });
+      }
+
+      function updateAutoplayButton() {
+        const button = document.getElementById("autoplayButton");
+        const statusText = document.getElementById("autoplayStatusText");
+        const isPaused = currentAutoplayState === "paused";
+
+        button.className = "autoplay-button " + (isPaused ? "paused" : "active");
+        button.innerHTML = isPaused ? "&#9654;" : "&#10074;&#10074;";
+
+        const labels = {
+          paused: "Paused",
+          idle: "Listening...",
+          detecting: "Sound detected...",
+          playing: "Playing",
+          silence: "Silence detected..."
+        };
+        statusText.textContent = labels[currentAutoplayState] || currentAutoplayState;
+      }
+
+      // Settings
+      function updateServerName() {
+        const header = document.getElementById("serverName");
+        header.textContent = currentConfig.displayName || "BabelPod";
+      }
+
+      function updateSettingsForm() {
+        document.getElementById("settingsDisplayName").value = currentConfig.displayName || "";
+        document.getElementById("settingsAutoplayEnabled").checked = currentConfig.autoplayEnabled || false;
+        document.getElementById("settingsDefaultVolume").value = currentConfig.defaultVolume || 50;
+        document.getElementById("settingsDefaultVolumeText").textContent = String(currentConfig.defaultVolume || 50);
+
+        // Populate default input select
+        const defaultInputSelect = document.getElementById("settingsDefaultInput");
+        while (defaultInputSelect.firstChild) defaultInputSelect.removeChild(defaultInputSelect.firstChild);
+        availableInputsList.forEach((item) => {
+          const opt = document.createElement("option");
+          opt.value = item.id;
+          opt.textContent = item.name;
+          if (item.id === currentConfig.defaultInputId) opt.selected = true;
+          defaultInputSelect.appendChild(opt);
+        });
+
+        // Populate default outputs checkboxes
+        const defaultOutputsDiv = document.getElementById("settingsDefaultOutputs");
+        while (defaultOutputsDiv.firstChild) defaultOutputsDiv.removeChild(defaultOutputsDiv.firstChild);
+        availableOutputsList.forEach((output) => {
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = output.id;
+          checkbox.checked = (currentConfig.defaultOutputIds || []).includes(output.id);
+          label.appendChild(checkbox);
+          label.appendChild(document.createTextNode(output.name));
+          defaultOutputsDiv.appendChild(label);
+        });
+      }
+
+      document.getElementById("settingsDefaultVolume").addEventListener("input", (ev) => {
+        document.getElementById("settingsDefaultVolumeText").textContent = ev.target.value;
+      });
+
+      function saveSettings() {
+        const defaultOutputCheckboxes = document.getElementById("settingsDefaultOutputs").querySelectorAll("input[type=checkbox]");
+        const selectedDefaultOutputs = [];
+        defaultOutputCheckboxes.forEach((cb) => {
+          if (cb.checked) selectedDefaultOutputs.push(cb.value);
+        });
+
+        socket.emit("setConfig", {
+          displayName: document.getElementById("settingsDisplayName").value,
+          defaultInputId: document.getElementById("settingsDefaultInput").value,
+          defaultOutputIds: selectedDefaultOutputs,
+          defaultVolume: Number(document.getElementById("settingsDefaultVolume").value),
+          autoplayEnabled: document.getElementById("settingsAutoplayEnabled").checked
+        });
+      }
 
       function onOutputCheckChange(e) {
         const cbs = outputsListDiv.querySelectorAll("input[type=checkbox]");
