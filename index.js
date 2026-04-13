@@ -30,8 +30,8 @@ const DEFAULT_CONFIG = {
   defaultInputId: null,
   defaultOutputIds: [],
   defaultVolume: 50,
-  autoplayEnabled: false,
-  autoplayThreshold: 0.002
+  autoconnectEnabled: false,
+  autoconnectThreshold: 0.002
 };
 
 let config = { ...DEFAULT_CONFIG };
@@ -112,8 +112,8 @@ class RmsMonitorTransform extends stream.Transform {
   }
 
   _transform(chunk, encoding, callback) {
-    // Skip RMS calculation when autoplay is paused (save CPU)
-    if (autoplayState.state === 'paused') {
+    // Skip RMS calculation when autoconnect is paused (save CPU)
+    if (autoconnectState.state === 'paused') {
       callback(null, chunk);
       return;
     }
@@ -145,25 +145,25 @@ let rmsMonitor = new RmsMonitorTransform();
 let lastRmsEmitTime = 0;
 
 // =======================
-// 4c) Autoplay state machine
+// 4c) Autoconnect state machine
 // =======================
-const AUTOPLAY_DETECT_SUSTAIN_MS = 250;
-const AUTOPLAY_SILENCE_TIMEOUT_MS = 300000; // 5 minutes
+const AUTOCONNECT_DETECT_SUSTAIN_MS = 250;
+const AUTOCONNECT_SILENCE_TIMEOUT_MS = 300000; // 5 minutes
 
-let autoplayState = {
-  state: config.autoplayEnabled ? 'idle' : 'paused',
+let autoconnectState = {
+  state: config.autoconnectEnabled ? 'idle' : 'paused',
   detectingSince: null,
   silenceSince: null,
 };
 
-function emitAutoplayState() {
-  io.emit('autoplay', { state: autoplayState.state });
+function emitAutoconnectState() {
+  io.emit('autoconnect', { state: autoconnectState.state });
 }
 
 function activateDefaultOutputs() {
   if (config.defaultOutputIds.length === 0) {
-    io.emit('status', { message: 'Autoplay: no default outputs configured' });
-    console.log("Autoplay: no default outputs configured");
+    io.emit('status', { message: 'Autoconnect: no default outputs configured' });
+    console.log("Autoconnect: no default outputs configured");
     return;
   }
 
@@ -177,101 +177,101 @@ function activateDefaultOutputs() {
     io.emit('volume', { value: volume });
     const missing = config.defaultOutputIds.length - validOutputIds.length;
     const message = missing > 0
-      ? `Autoplay activated (${missing} default output${missing > 1 ? 's' : ''} unavailable)`
-      : 'Autoplay activated';
+      ? `Autoconnect activated (${missing} default output${missing > 1 ? 's' : ''} unavailable)`
+      : 'Autoconnect activated';
     io.emit('status', { message });
-    console.log("Autoplay: activated default outputs:", validOutputIds);
+    console.log("Autoconnect: activated default outputs:", validOutputIds);
   } else {
-    io.emit('serverError', { message: 'Autoplay: default outputs not available' });
-    console.log("Autoplay: all default outputs unavailable:", config.defaultOutputIds);
+    io.emit('serverError', { message: 'Autoconnect: default outputs not available' });
+    console.log("Autoconnect: all default outputs unavailable:", config.defaultOutputIds);
   }
 }
 
 function deactivateOutputs() {
   syncOutputs([]);
   io.emit('output', { ids: [] });
-  io.emit('status', { message: 'Autoplay: speakers released after silence' });
-  console.log("Autoplay: deactivated outputs after silence timeout");
+  io.emit('status', { message: 'Autoconnect: speakers released after silence' });
+  console.log("Autoconnect: deactivated outputs after silence timeout");
 }
 
-function tickAutoplay(rmsLevel) {
-  const threshold = config.autoplayThreshold || 0.002;
+function tickAutoconnect(rmsLevel) {
+  const threshold = config.autoconnectThreshold || 0.002;
   const now = Date.now();
 
-  switch (autoplayState.state) {
+  switch (autoconnectState.state) {
     case 'paused':
       return; // Do nothing
 
     case 'idle':
       if (rmsLevel > threshold) {
-        autoplayState.state = 'detecting';
-        autoplayState.detectingSince = now;
-        emitAutoplayState();
+        autoconnectState.state = 'detecting';
+        autoconnectState.detectingSince = now;
+        emitAutoconnectState();
       }
       break;
 
     case 'detecting':
       if (rmsLevel <= threshold) {
         // Signal dropped — false trigger
-        autoplayState.state = 'idle';
-        autoplayState.detectingSince = null;
-        emitAutoplayState();
-      } else if (now - autoplayState.detectingSince >= AUTOPLAY_DETECT_SUSTAIN_MS) {
+        autoconnectState.state = 'idle';
+        autoconnectState.detectingSince = null;
+        emitAutoconnectState();
+      } else if (now - autoconnectState.detectingSince >= AUTOCONNECT_DETECT_SUSTAIN_MS) {
         // Sustained signal — activate!
-        autoplayState.state = 'playing';
-        autoplayState.detectingSince = null;
-        emitAutoplayState();
+        autoconnectState.state = 'connected';
+        autoconnectState.detectingSince = null;
+        emitAutoconnectState();
         activateDefaultOutputs();
       }
       break;
 
-    case 'playing':
+    case 'connected':
       if (rmsLevel <= threshold) {
-        autoplayState.state = 'silence';
-        autoplayState.silenceSince = now;
-        emitAutoplayState();
+        autoconnectState.state = 'silence';
+        autoconnectState.silenceSince = now;
+        emitAutoconnectState();
       }
       break;
 
     case 'silence':
       if (rmsLevel > threshold) {
         // Sound returned
-        autoplayState.state = 'playing';
-        autoplayState.silenceSince = null;
-        emitAutoplayState();
-      } else if (now - autoplayState.silenceSince >= AUTOPLAY_SILENCE_TIMEOUT_MS) {
+        autoconnectState.state = 'connected';
+        autoconnectState.silenceSince = null;
+        emitAutoconnectState();
+      } else if (now - autoconnectState.silenceSince >= AUTOCONNECT_SILENCE_TIMEOUT_MS) {
         // Extended silence — release speakers
-        autoplayState.state = 'idle';
-        autoplayState.silenceSince = null;
-        emitAutoplayState();
+        autoconnectState.state = 'idle';
+        autoconnectState.silenceSince = null;
+        emitAutoconnectState();
         deactivateOutputs();
       }
       break;
   }
 }
 
-function setAutoplayState(newState) {
+function setAutoconnectState(newState) {
   if (newState === 'paused') {
-    autoplayState.state = 'paused';
-    autoplayState.detectingSince = null;
-    autoplayState.silenceSince = null;
+    autoconnectState.state = 'paused';
+    autoconnectState.detectingSince = null;
+    autoconnectState.silenceSince = null;
     // Master kill switch — stop all outputs
     syncOutputs([]);
     io.emit('output', { ids: [] });
-    emitAutoplayState();
-    console.log("Autoplay: paused (all outputs stopped)");
-  } else if (newState === 'playing') {
-    autoplayState.state = 'idle'; // Enter idle, let RMS detection handle the rest
-    autoplayState.detectingSince = null;
-    autoplayState.silenceSince = null;
-    emitAutoplayState();
-    console.log("Autoplay: armed and listening");
+    emitAutoconnectState();
+    console.log("Autoconnect: paused (all outputs stopped)");
+  } else if (newState === 'listening') {
+    autoconnectState.state = 'idle'; // Enter idle, let RMS detection handle the rest
+    autoconnectState.detectingSince = null;
+    autoconnectState.silenceSince = null;
+    emitAutoconnectState();
+    console.log("Autoconnect: armed and listening");
   }
 }
 
-// Hook RMS readings into autoplay state machine
+// Hook RMS readings into autoconnect state machine
 function wireRmsMonitor() {
-  rmsMonitor.on('rms', tickAutoplay);
+  rmsMonitor.on('rms', tickAutoconnect);
 }
 wireRmsMonitor();
 
@@ -589,7 +589,7 @@ function buildStatePayload() {
     selectedOutputs,
     volume,
     config,
-    autoplayState: autoplayState.state
+    autoconnectState: autoconnectState.state
   };
 }
 
@@ -1077,7 +1077,7 @@ io.on('connection', socket => {
     const oldDisplayName = config.displayName;
 
     // Only allow known fields
-    const allowedFields = ['displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'autoplayEnabled', 'autoplayThreshold'];
+    const allowedFields = ['displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'autoconnectEnabled', 'autoconnectThreshold'];
     const filtered = {};
     for (const key of allowedFields) {
       if (key in data) filtered[key] = data[key];
@@ -1092,13 +1092,13 @@ io.on('connection', socket => {
     io.emit('status', { message: 'Settings saved' });
   });
 
-  socket.on('setAutoplay', (data) => {
+  socket.on('setAutoconnect', (data) => {
     if (socket.id !== sessionOwner) return;
     const newState = data?.state;
-    if (newState !== 'playing' && newState !== 'paused') return;
+    if (newState !== 'listening' && newState !== 'paused') return;
 
-    console.log("Setting autoplay state:", newState);
-    setAutoplayState(newState);
+    console.log("Setting autoconnect state:", newState);
+    setAutoconnectState(newState);
   });
 
   socket.on('disconnect', () => {

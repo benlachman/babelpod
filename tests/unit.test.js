@@ -172,7 +172,7 @@ describe('RMS Audio Level Calculation', () => {
   });
 });
 
-describe('Autoplay State Machine', () => {
+describe('Autoconnect State Machine', () => {
   const DETECT_SUSTAIN_MS = 250;
   const SILENCE_TIMEOUT_MS = 300000;
 
@@ -186,7 +186,7 @@ describe('Autoplay State Machine', () => {
     };
   }
 
-  function tickAutoplay(state, rmsLevel, threshold = 0.002, now = Date.now()) {
+  function tickAutoconnect(state, rmsLevel, threshold = 0.002, now = Date.now()) {
     switch (state.state) {
       case 'paused':
         return state;
@@ -199,17 +199,17 @@ describe('Autoplay State Machine', () => {
         if (rmsLevel <= threshold) {
           return { ...state, state: 'idle', detectingSince: null };
         } else if (now - state.detectingSince >= DETECT_SUSTAIN_MS) {
-          return { ...state, state: 'playing', detectingSince: null };
+          return { ...state, state: 'connected', detectingSince: null };
         }
         return state;
-      case 'playing':
+      case 'connected':
         if (rmsLevel <= threshold) {
           return { ...state, state: 'silence', silenceSince: now };
         }
         return state;
       case 'silence':
         if (rmsLevel > threshold) {
-          return { ...state, state: 'playing', silenceSince: null };
+          return { ...state, state: 'connected', silenceSince: null };
         } else if (now - state.silenceSince >= SILENCE_TIMEOUT_MS) {
           return { ...state, state: 'idle', silenceSince: null };
         }
@@ -221,67 +221,67 @@ describe('Autoplay State Machine', () => {
 
   test('should stay paused when receiving audio', () => {
     const state = createState('paused');
-    const result = tickAutoplay(state, 0.1);
+    const result = tickAutoconnect(state, 0.1);
     expect(result.state).toBe('paused');
   });
 
   test('should transition from idle to detecting on signal', () => {
     const state = createState('idle');
-    const result = tickAutoplay(state, 0.01);
+    const result = tickAutoconnect(state, 0.01);
     expect(result.state).toBe('detecting');
     expect(result.detectingSince).not.toBeNull();
   });
 
   test('should stay idle when signal is below threshold', () => {
     const state = createState('idle');
-    const result = tickAutoplay(state, 0.001);
+    const result = tickAutoconnect(state, 0.001);
     expect(result.state).toBe('idle');
   });
 
   test('should return to idle from detecting when signal drops', () => {
     const state = { ...createState('detecting'), detectingSince: Date.now() };
-    const result = tickAutoplay(state, 0.001);
+    const result = tickAutoconnect(state, 0.001);
     expect(result.state).toBe('idle');
   });
 
   test('should transition from detecting to playing after sustain period', () => {
     const now = Date.now();
     const state = { ...createState('detecting'), detectingSince: now - 300 };
-    const result = tickAutoplay(state, 0.01, 0.002, now);
-    expect(result.state).toBe('playing');
+    const result = tickAutoconnect(state, 0.01, 0.002, now);
+    expect(result.state).toBe('connected');
   });
 
   test('should stay detecting before sustain period expires', () => {
     const now = Date.now();
     const state = { ...createState('detecting'), detectingSince: now - 100 };
-    const result = tickAutoplay(state, 0.01, 0.002, now);
+    const result = tickAutoconnect(state, 0.01, 0.002, now);
     expect(result.state).toBe('detecting');
   });
 
   test('should transition from playing to silence when signal drops', () => {
-    const state = createState('playing');
-    const result = tickAutoplay(state, 0.001);
+    const state = createState('connected');
+    const result = tickAutoconnect(state, 0.001);
     expect(result.state).toBe('silence');
     expect(result.silenceSince).not.toBeNull();
   });
 
   test('should return from silence to playing when signal resumes', () => {
     const state = { ...createState('silence'), silenceSince: Date.now() };
-    const result = tickAutoplay(state, 0.01);
-    expect(result.state).toBe('playing');
+    const result = tickAutoconnect(state, 0.01);
+    expect(result.state).toBe('connected');
   });
 
   test('should transition from silence to idle after timeout', () => {
     const now = Date.now();
     const state = { ...createState('silence'), silenceSince: now - 300001 };
-    const result = tickAutoplay(state, 0.001, 0.002, now);
+    const result = tickAutoconnect(state, 0.001, 0.002, now);
     expect(result.state).toBe('idle');
   });
 
   test('should stay in silence before timeout expires', () => {
     const now = Date.now();
     const state = { ...createState('silence'), silenceSince: now - 60000 };
-    const result = tickAutoplay(state, 0.001, 0.002, now);
+    const result = tickAutoconnect(state, 0.001, 0.002, now);
     expect(result.state).toBe('silence');
   });
 });
@@ -292,8 +292,8 @@ describe('Config Management', () => {
     defaultInputId: null,
     defaultOutputIds: [],
     defaultVolume: 50,
-    autoplayEnabled: false,
-    autoplayThreshold: 0.002
+    autoconnectEnabled: false,
+    autoconnectThreshold: 0.002
   };
 
   test('should merge partial config updates', () => {
@@ -303,15 +303,15 @@ describe('Config Management', () => {
     expect(merged.displayName).toBe('NewName');
     expect(merged.defaultVolume).toBe(75);
     expect(merged.defaultInputId).toBeNull();
-    expect(merged.autoplayEnabled).toBe(false);
+    expect(merged.autoconnectEnabled).toBe(false);
   });
 
   test('should preserve unspecified fields during partial update', () => {
-    const config = { ...DEFAULT_CONFIG, displayName: 'Original', autoplayEnabled: true };
+    const config = { ...DEFAULT_CONFIG, displayName: 'Original', autoconnectEnabled: true };
     const partial = { defaultVolume: 80 };
     const merged = { ...config, ...partial };
     expect(merged.displayName).toBe('Original');
-    expect(merged.autoplayEnabled).toBe(true);
+    expect(merged.autoconnectEnabled).toBe(true);
     expect(merged.defaultVolume).toBe(80);
   });
 
@@ -338,7 +338,7 @@ describe('Config Management', () => {
     const config = { ...DEFAULT_CONFIG, ...parsed };
     expect(config.displayName).toBe('Custom');
     expect(config.defaultOutputIds).toEqual([]);
-    expect(config.autoplayThreshold).toBe(0.002);
+    expect(config.autoconnectThreshold).toBe(0.002);
   });
 });
 
