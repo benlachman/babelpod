@@ -272,13 +272,14 @@
 
       <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
         <label style="margin: 0;">Outputs</label>
-        <div style="display: flex; align-items: center; gap: 8px;">
+        <div id="autoplayControls" style="display: flex; align-items: center; gap: 8px;">
           <span id="autoplayStatusText" style="font-size: 0.8rem; color: #999;"></span>
           <div class="rms-bar-container" style="width: 40px; margin: 0;">
             <div class="rms-bar" id="rmsBar"></div>
           </div>
           <button id="autoplayButton" class="autoplay-button paused" onclick="toggleAutoplay()" style="width: 32px; height: 32px; font-size: 0.9rem;">&#9654;</button>
         </div>
+        <span id="autoplayDisabledHint" style="display: none; font-size: 0.75rem; color: #666; cursor: pointer;" onclick="document.querySelector('.settings').open = true;">Enable autoconnect &rarr;</span>
       </div>
       <div class="checkbox-list" id="outputsList"></div>
 
@@ -572,6 +573,19 @@
       }
 
       function updateAutoplayButton() {
+        const controls = document.getElementById("autoplayControls");
+        const hint = document.getElementById("autoplayDisabledHint");
+        const isEnabled = currentConfig.autoplayEnabled;
+
+        if (!isEnabled && currentAutoplayState === "paused") {
+          controls.style.display = "none";
+          hint.style.display = "";
+          return;
+        }
+
+        controls.style.display = "flex";
+        hint.style.display = "none";
+
         const button = document.getElementById("autoplayButton");
         const statusText = document.getElementById("autoplayStatusText");
         const isPaused = currentAutoplayState === "paused";
@@ -580,11 +594,11 @@
         button.innerHTML = isPaused ? "&#9654;" : "&#10074;&#10074;";
 
         const labels = {
-          paused: "Paused",
-          idle: "Listening...",
-          detecting: "Sound detected...",
-          playing: "Playing",
-          silence: "Silence detected..."
+          paused: "Autoconnect paused",
+          idle: "Autoconnect listening",
+          detecting: "Connecting...",
+          playing: "Connected",
+          silence: "Connected"
         };
         statusText.textContent = labels[currentAutoplayState] || currentAutoplayState;
       }

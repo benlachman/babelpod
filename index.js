@@ -112,6 +112,12 @@ class RmsMonitorTransform extends stream.Transform {
   }
 
   _transform(chunk, encoding, callback) {
+    // Skip RMS calculation when autoplay is paused (save CPU)
+    if (autoplayState.state === 'paused') {
+      callback(null, chunk);
+      return;
+    }
+
     this.chunkCount++;
     // Process every 4th chunk for efficiency (~5-10 readings/sec)
     if (this.chunkCount % 4 === 0) {
@@ -155,11 +161,10 @@ function emitAutoplayState() {
 }
 
 function activateDefaultOutputs() {
-  if (config.defaultOutputIds.length === 0) return;
-
-  // Ensure default input is selected
-  if (config.defaultInputId && currentInput !== config.defaultInputId) {
-    // Input switching is handled elsewhere; for autoplay we assume it's already set at startup
+  if (config.defaultOutputIds.length === 0) {
+    io.emit('status', { message: 'Autoplay: no default outputs configured' });
+    console.log("Autoplay: no default outputs configured");
+    return;
   }
 
   volume = config.defaultVolume || 50;
@@ -170,8 +175,15 @@ function activateDefaultOutputs() {
     syncOutputs(validOutputIds);
     io.emit('output', { ids: validOutputIds });
     io.emit('volume', { value: volume });
-    io.emit('status', { message: 'Autoplay activated' });
+    const missing = config.defaultOutputIds.length - validOutputIds.length;
+    const message = missing > 0
+      ? `Autoplay activated (${missing} default output${missing > 1 ? 's' : ''} unavailable)`
+      : 'Autoplay activated';
+    io.emit('status', { message });
     console.log("Autoplay: activated default outputs:", validOutputIds);
+  } else {
+    io.emit('serverError', { message: 'Autoplay: default outputs not available' });
+    console.log("Autoplay: all default outputs unavailable:", config.defaultOutputIds);
   }
 }
 
