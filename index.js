@@ -40,7 +40,12 @@ function loadConfig() {
   try {
     const data = fs.readFileSync(CONFIG_PATH, 'utf8');
     const parsed = JSON.parse(data);
-    config = { ...DEFAULT_CONFIG, ...parsed };
+    // Only keep known fields; drop legacy keys
+    const clean = {};
+    for (const key of Object.keys(DEFAULT_CONFIG)) {
+      if (key in parsed) clean[key] = parsed[key];
+    }
+    config = { ...DEFAULT_CONFIG, ...clean };
     console.log("Loaded config:", config);
   } catch (error) {
     if (error.code === 'ENOENT') {
@@ -53,7 +58,12 @@ function loadConfig() {
 }
 
 function saveConfig(partial) {
-  config = { ...config, ...partial };
+  // Only merge known fields to avoid polluting config with legacy keys
+  const clean = {};
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    if (key in partial) clean[key] = partial[key];
+  }
+  config = { ...config, ...clean };
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
     console.log("Config saved:", config);
@@ -194,16 +204,34 @@ function deactivateOutputs() {
   console.log("Autoconnect: deactivated outputs after silence timeout");
 }
 
+// Periodic RMS logging — helps diagnose missed triggers
+let lastRmsLogTime = 0;
+let maxRmsSinceLastLog = 0;
+const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
+
+function logStateTransition(fromState, toState, rmsLevel, reason) {
+  console.log(`[autoconnect] ${fromState} → ${toState} (rms=${rmsLevel.toFixed(4)}, reason=${reason})`);
+}
+
 function tickAutoconnect(rmsLevel) {
   const threshold = config.autoconnectThreshold || 0.002;
   const now = Date.now();
 
+  // Periodic RMS sample logging
+  if (rmsLevel > maxRmsSinceLastLog) maxRmsSinceLastLog = rmsLevel;
+  if (now - lastRmsLogTime >= RMS_LOG_INTERVAL_MS) {
+    console.log(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_rms=${maxRmsSinceLastLog.toFixed(4)} current_rms=${rmsLevel.toFixed(4)}`);
+    lastRmsLogTime = now;
+    maxRmsSinceLastLog = 0;
+  }
+
   switch (autoconnectState.state) {
     case 'paused':
-      return; // Do nothing
+      return;
 
     case 'idle':
       if (rmsLevel > threshold) {
+        logStateTransition('idle', 'detecting', rmsLevel, `above threshold ${threshold}`);
         autoconnectState.state = 'detecting';
         autoconnectState.detectingSince = now;
         emitAutoconnectState();
@@ -212,12 +240,13 @@ function tickAutoconnect(rmsLevel) {
 
     case 'detecting':
       if (rmsLevel <= threshold) {
-        // Signal dropped — false trigger
+        const heldFor = now - autoconnectState.detectingSince;
+        logStateTransition('detecting', 'idle', rmsLevel, `dropped after ${heldFor}ms (needed ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms)`);
         autoconnectState.state = 'idle';
         autoconnectState.detectingSince = null;
         emitAutoconnectState();
       } else if (now - autoconnectState.detectingSince >= AUTOCONNECT_DETECT_SUSTAIN_MS) {
-        // Sustained signal — activate!
+        logStateTransition('detecting', 'connected', rmsLevel, `sustained ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms`);
         autoconnectState.state = 'connected';
         autoconnectState.detectingSince = null;
         emitAutoconnectState();
@@ -227,6 +256,7 @@ function tickAutoconnect(rmsLevel) {
 
     case 'connected':
       if (rmsLevel <= threshold) {
+        logStateTransition('connected', 'silence', rmsLevel, `below threshold`);
         autoconnectState.state = 'silence';
         autoconnectState.silenceSince = now;
         emitAutoconnectState();
@@ -235,12 +265,13 @@ function tickAutoconnect(rmsLevel) {
 
     case 'silence':
       if (rmsLevel > threshold) {
-        // Sound returned
+        logStateTransition('silence', 'connected', rmsLevel, `signal returned`);
         autoconnectState.state = 'connected';
         autoconnectState.silenceSince = null;
         emitAutoconnectState();
       } else if (now - autoconnectState.silenceSince >= AUTOCONNECT_SILENCE_TIMEOUT_MS) {
-        // Extended silence — release speakers
+        const silentFor = now - autoconnectState.silenceSince;
+        logStateTransition('silence', 'idle', rmsLevel, `silent for ${Math.round(silentFor/1000)}s`);
         autoconnectState.state = 'idle';
         autoconnectState.silenceSince = null;
         emitAutoconnectState();
