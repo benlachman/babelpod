@@ -21,6 +21,20 @@ const { hostname } = require('os');
 const path = require('path');
 
 // =======================
+// 1a) Log level
+// =======================
+// LOG_LEVEL env var: debug | info | warn | error (default: info)
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const currentLogLevel = LOG_LEVELS[(process.env.LOG_LEVEL || 'info').toLowerCase()] ?? LOG_LEVELS.info;
+const log = {
+  debug: (...args) => { if (currentLogLevel <= LOG_LEVELS.debug) console.log(...args); },
+  info: (...args) => { if (currentLogLevel <= LOG_LEVELS.info) console.log(...args); },
+  warn: (...args) => { if (currentLogLevel <= LOG_LEVELS.warn) console.warn(...args); },
+  error: (...args) => { if (currentLogLevel <= LOG_LEVELS.error) console.error(...args); },
+};
+log.info(`Log level: ${process.env.LOG_LEVEL || 'info'}`);
+
+// =======================
 // 1b) Instance configuration
 // =======================
 const CONFIG_PATH = path.join(__dirname, 'babelpod.config.json');
@@ -210,7 +224,7 @@ let maxRmsSinceLastLog = 0;
 const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
 
 function logStateTransition(fromState, toState, rmsLevel, reason) {
-  console.log(`[autoconnect] ${fromState} → ${toState} (rms=${rmsLevel.toFixed(4)}, reason=${reason})`);
+  log.info(`[autoconnect] ${fromState} → ${toState} (rms=${rmsLevel.toFixed(4)}, reason=${reason})`);
 }
 
 function tickAutoconnect(rmsLevel) {
@@ -220,7 +234,7 @@ function tickAutoconnect(rmsLevel) {
   // Periodic RMS sample logging
   if (rmsLevel > maxRmsSinceLastLog) maxRmsSinceLastLog = rmsLevel;
   if (now - lastRmsLogTime >= RMS_LOG_INTERVAL_MS) {
-    console.log(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_rms=${maxRmsSinceLastLog.toFixed(4)} current_rms=${rmsLevel.toFixed(4)}`);
+    log.debug(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_rms=${maxRmsSinceLastLog.toFixed(4)} current_rms=${rmsLevel.toFixed(4)}`);
     lastRmsLogTime = now;
     maxRmsSinceLastLog = 0;
   }
