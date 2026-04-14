@@ -19,6 +19,9 @@ WorkingDirectory=/home/pi/babelpod
 Environment=NODE_ENV=production
 # Some audio libs rely on XDG_RUNTIME_DIR to talk to BlueZ cleanly
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# LOG_LEVEL: debug | info | warn | error (default: info)
+# Use debug while tuning autoconnect thresholds; dial back to info for steady state
+Environment=LOG_LEVEL=debug
 
 # Start the Node 20 binary directly
 ExecStart=/usr/bin/node /home/pi/babelpod/index.js

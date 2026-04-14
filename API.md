@@ -133,6 +133,90 @@ Claim session ownership. No payload required.
 {}
 ```
 
+### `setConfig`
+
+Update instance configuration. Partial updates allowed — only fields present are changed. Requires session ownership.
+
+```json
+{
+  "displayName": "Living Room Pi",
+  "defaultInputId": "plughw:0,0",
+  "defaultOutputIds": ["air:Kitchen", "air:Living Room"],
+  "defaultVolume": 50,
+  "autoplayEnabled": true,
+  "autoplayThreshold": 0.002
+}
+```
+
+### `setAutoplay`
+
+Toggle the autoplay state machine. `"playing"` arms autoplay (enters idle/listening). `"paused"` is a master kill switch — stops all outputs immediately. Requires session ownership.
+
+```json
+{ "state": "playing" }
+```
+
+## Instance Configuration
+
+BabelPod stores instance configuration in `babelpod.config.json` alongside the server. Configuration persists across restarts and is editable from any client via the `setConfig` event.
+
+### Server to Client
+
+**`config`** — Sent when configuration changes. Also included in the `state` event on connection.
+
+```json
+{
+  "displayName": "PattyPi",
+  "defaultInputId": "plughw:0,0",
+  "defaultOutputIds": ["air:Kitchen"],
+  "defaultVolume": 50,
+  "autoplayEnabled": true,
+  "autoplayThreshold": 0.002
+}
+```
+
+## Autoplay
+
+BabelPod can automatically detect audio on the input and route it to configured default speakers.
+
+### Server to Client
+
+**`autoplay`** — Sent when the autoplay state changes.
+
+```json
+{ "state": "idle" }
+```
+
+Valid states: `"paused"`, `"idle"`, `"detecting"`, `"playing"`, `"silence"`
+
+**`rmsLevel`** — Sent at ~4Hz with the current input audio level (0.0-1.0 range).
+
+```json
+{ "level": 0.042 }
+```
+
+### State Machine
+
+- **paused** — Master kill switch. All outputs stopped. Autoplay won't trigger.
+- **idle** — Armed and listening. Monitoring input RMS level. Outputs disconnected.
+- **detecting** — Signal above threshold detected, sustaining for 250ms to filter transient bumps.
+- **playing** — Audio routing active. Default outputs connected.
+- **silence** — Silence detected while playing. Outputs disconnect after 5 minutes of sustained silence.
+
+The `"playing"` client command enters `idle` (arms autoplay). The `"paused"` command stops everything immediately. On server restart, state is determined by `config.autoplayEnabled`.
+
+### Extended `state` Event
+
+The `state` event now includes two additional fields:
+
+```json
+{
+  ...existing fields...,
+  "config": { ... },
+  "autoplayState": "idle"
+}
+```
+
 ## Session Ownership
 
 Only one client controls BabelPod at a time. The session model works as follows:

@@ -125,6 +125,15 @@
         background: #2f2222;
         border: 1px solid #662222;
       }
+      .input-level-indicator {
+        display: inline-block;
+        margin-left: auto;
+        height: 6px;
+        min-width: 6px;
+        border-radius: 3px;
+        background: #444;
+        transition: width 0.1s linear, background-color 0.2s;
+      }
       .checkbox-list input[type="checkbox"] {
         margin-right: 0.5rem;
         transform: scale(1.2);
@@ -133,9 +142,12 @@
       .info {
         background: #1f1f1f;
         margin-top: 1rem;
-        padding: 1rem;
+        padding: 0.5rem 0.75rem;
         border-radius: 6px;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
+      }
+      .info p {
+        margin: 0.25rem 0;
       }
 
       /* Session overlay */
@@ -175,28 +187,160 @@
       #sessionOverlay button:hover {
         background: #666;
       }
+
+      /* Autoconnect controls */
+      .autoconnect-section {
+        text-align: center;
+        padding: 1rem 0;
+        border-bottom: 1px solid #333;
+        margin-bottom: 0.5rem;
+      }
+      .autoconnect-button {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: none;
+        cursor: pointer;
+        color: white;
+        transition: background 0.2s;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .autoconnect-button.active,
+      .autoconnect-button.paused {
+        background: transparent;
+      }
+      .autoconnect-button:hover {
+        background: #333;
+      }
+      .autoconnect-status {
+        font-size: 0.85rem;
+        color: #999;
+        margin-top: 0.5rem;
+      }
+      .rms-bar-container {
+        height: 4px;
+        background: #333;
+        border-radius: 2px;
+        margin-top: 0.75rem;
+        overflow: hidden;
+      }
+      .rms-bar {
+        height: 100%;
+        background: linear-gradient(to right, #4CAF50, #8BC34A);
+        width: 0%;
+        transition: width 0.1s linear;
+        border-radius: 2px;
+      }
+
+      /* Settings section */
+      details.settings {
+        margin-top: 1rem;
+      }
+      details.settings summary {
+        cursor: pointer;
+        font-weight: 500;
+        color: #aaa;
+        padding: 0.5rem 0;
+      }
+      details.settings .settings-content {
+        padding: 0.5rem 0;
+      }
+      details.settings input[type="text"],
+      details.settings select {
+        width: 100%;
+        padding: 0.5rem;
+        background: #2a2a2a;
+        border: 1px solid #444;
+        border-radius: 4px;
+        color: #ddd;
+        font-size: 0.9rem;
+        box-sizing: border-box;
+      }
+      details.settings .save-button {
+        margin-top: 1rem;
+        padding: 0.5rem 1.5rem;
+        background: #2e7d32;
+        border: none;
+        border-radius: 4px;
+        color: white;
+        cursor: pointer;
+        font-size: 0.9rem;
+      }
+      details.settings .save-button:hover {
+        background: #388e3c;
+      }
     </style>
   </head>
   <body>
-    <header>BabelPod</header>
+    <header id="serverName">BabelPod</header>
     <div class="container">
       <label>Input Device</label>
       <div class="radio-list" id="inputsList"></div>
 
       <label for="outputVolume">Volume</label>
-      <input type="range" min="0" max="100" value="50" id="outputVolume" />
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <input type="range" min="0" max="100" value="50" id="outputVolume" style="flex: 1;" />
+        <span id="volumeLabel" style="font-size: 0.85rem; color: #999; min-width: 35px; text-align: right;">50%</span>
+      </div>
 
-      <label>Outputs</label>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
+        <label style="margin: 0;">Outputs</label>
+        <div id="autoconnectControls" style="display: flex; align-items: center; gap: 8px;">
+          <span id="autoconnectStatusText" style="font-size: 0.8rem; color: #999;"></span>
+          <button id="autoconnectButton" class="autoconnect-button paused" onclick="toggleAutoconnect()"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8.5 1A4.5 4.5 0 0 0 4 5.5v7.047a2.453 2.453 0 0 0 4.75.861l.512-1.363a5.6 5.6 0 0 1 .816-1.46l2.008-2.581A4.34 4.34 0 0 0 8.66 1zM3 5.5A5.5 5.5 0 0 1 8.5 0h.16a5.34 5.34 0 0 1 4.215 8.618l-2.008 2.581a4.6 4.6 0 0 0-.67 1.197l-.51 1.363A3.453 3.453 0 0 1 3 12.547zM8.5 4A1.5 1.5 0 0 0 7 5.5v2.695q.168-.09.332-.192c.327-.208.577-.44.72-.727a.5.5 0 1 1 .895.448c-.256.513-.673.865-1.079 1.123A9 9 0 0 1 7 9.313V11.5a.5.5 0 0 1-1 0v-6a2.5 2.5 0 0 1 5 0V6a.5.5 0 0 1-1 0v-.5A1.5 1.5 0 0 0 8.5 4"/></svg></button>
+        </div>
+        <span id="autoconnectDisabledHint" style="display: none; font-size: 0.75rem; color: #666; cursor: pointer;" onclick="document.querySelector('.settings').open = true;">Enable Autoconnect &rarr;</span>
+      </div>
       <div class="checkbox-list" id="outputsList"></div>
 
       <div class="info">
-        <p>Current Input: <span id="curInputText"></span></p>
-        <p>Current Volume: <span id="curVolumeText"></span></p>
-        <p>Active Outputs:</p>
+        <label style="font-size: 1rem;">Status</label>
+        <p>Input: <span id="curInputText"></span></p>
+        <p>Volume: <span id="curVolumeText"></span></p>
+        <p>Active Outputs: <span id="activeOutputsSummary"></span></p>
         <ul id="activeOutputs"></ul>
-        <p id="statusMessage" style="color: #4CAF50; margin-top: 1rem;"></p>
-        <p id="errorMessage" style="color: #f44336; margin-top: 0.5rem;"></p>
+        <div style="min-height: 1.5rem; margin-top: 0.5rem;">
+          <p id="statusMessage" style="color: #4CAF50; margin: 0;"></p>
+          <p id="errorMessage" style="color: #f44336; margin: 0;"></p>
+        </div>
       </div>
+
+      <details class="settings">
+        <summary>Settings</summary>
+        <div class="settings-content">
+          <label>Display Name</label>
+          <input type="text" id="settingsDisplayName" />
+
+          <label>Default Input</label>
+          <select id="settingsDefaultInput"></select>
+
+          <label>Input Mode</label>
+          <select id="settingsInputMode">
+            <option value="phono">Phono (with preamp)</option>
+            <option value="line">Line</option>
+          </select>
+
+          <label for="settingsDefaultVolume">Default Volume</label>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="range" min="0" max="100" value="50" id="settingsDefaultVolume" style="flex: 1;" />
+            <span id="settingsVolumeLabel" style="font-size: 0.85rem; color: #999; min-width: 35px; text-align: right;">50%</span>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
+            <label style="margin: 0;">Default Outputs</label>
+            <label style="display: flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.85rem; color: #aaa;">
+              <input type="checkbox" id="settingsAutoconnectEnabled" style="transform: scale(1.1); accent-color: #fe0000;" />
+              Autoconnect on audio signal
+            </label>
+          </div>
+          <div class="checkbox-list" id="settingsDefaultOutputs"></div>
+
+          <button class="save-button" onclick="saveSettings()">Save Settings</button>
+        </div>
+      </details>
     </div>
 
     <div id="sessionOverlay">
@@ -214,6 +358,7 @@
         const max = rangeInput.max || 100;
         const percentage = (value / max) * 100;
         rangeInput.style.setProperty("--progress", `${percentage}%`);
+        document.getElementById("volumeLabel").textContent = value + "%";
       }
 
       rangeInput.addEventListener("input", updateSliderProgress);
@@ -230,6 +375,9 @@
       let lastEmittedVolume = null;
       let lastEmittedOutputs = null;
       let lastEmittedInput = null;
+      let currentConfig = {};
+      let currentAutoconnectState = "paused";
+      let availableOutputsList = [];
 
       const inputsList = document.getElementById("inputsList");
       const volumeRange = document.getElementById("outputVolume");
@@ -264,14 +412,37 @@
       }
 
       function renderActiveOutputs() {
+        const summary = document.getElementById("activeOutputsSummary");
         while (activeOutputsUl.firstChild) {
           activeOutputsUl.removeChild(activeOutputsUl.firstChild);
         }
-        currentOutputs.forEach((o) => {
-          let li = document.createElement("li");
-          li.textContent = o;
-          activeOutputsUl.appendChild(li);
-        });
+
+        if (currentOutputs.length > 0) {
+          // Determine suffix based on autoconnect state
+          let suffix = "";
+          if (currentAutoconnectState === "connected") {
+            suffix = " (autoconnected)";
+          } else if (currentAutoconnectState === "silence") {
+            suffix = " (idle)";
+          }
+          summary.textContent = suffix;
+          currentOutputs.forEach((outputId) => {
+            let listItem = document.createElement("li");
+            const outputInfo = availableOutputsList.find(output => output.id === outputId);
+            listItem.textContent = outputInfo ? outputInfo.name : outputId;
+            activeOutputsUl.appendChild(listItem);
+          });
+        } else if (currentConfig.autoconnectEnabled && currentAutoconnectState === "paused") {
+          summary.textContent = "None (Autoconnect paused)";
+        } else if (currentConfig.autoconnectEnabled && (currentConfig.defaultOutputIds || []).length > 0) {
+          const defaultNames = (currentConfig.defaultOutputIds || []).map((outputId) => {
+            const outputInfo = availableOutputsList.find(output => output.id === outputId);
+            return outputInfo ? outputInfo.name : outputId;
+          });
+          summary.textContent = "None (Autoconnect: " + defaultNames.join(", ") + ")";
+        } else {
+          summary.textContent = "None";
+        }
       }
 
       // Overlay logic
@@ -310,6 +481,14 @@
           r.addEventListener("change", onInputRadioChange);
           lb.appendChild(r);
           lb.appendChild(document.createTextNode(item.name));
+
+          // Level indicator dot/bar for selected input
+          const indicator = document.createElement("span");
+          indicator.className = "input-level-indicator";
+          indicator.dataset.inputId = item.id;
+          indicator.title = "Audio input level";
+          lb.appendChild(indicator);
+
           if (item.id === currentInput) lb.classList.add("selected");
           inputsList.appendChild(lb);
         });
@@ -336,20 +515,27 @@
       // Full state bundle on connection
       socket.on("state", (s) => {
         availableInputsList = s.inputs;
+        availableOutputsList = s.outputs;
         currentInput = s.selectedInput;
         currentOutputs = s.selectedOutputs;
         currentVolume = s.volume;
         isOwner = (socket.id === s.sessionOwner);
+        if (s.config) currentConfig = s.config;
+        if (s.autoconnectState) currentAutoconnectState = s.autoconnectState;
 
         renderInputsList();
         updateInputSelection();
         renderOutputsList(s.outputs);
         renderActiveOutputs();
         volumeRange.value = s.volume;
-        curVolumeText.textContent = String(s.volume);
-        curInputText.textContent = s.selectedInput;
+        curVolumeText.textContent = s.volume + "%";
+        const selectedInputInfo = s.inputs.find(input => input.id === s.selectedInput);
+        curInputText.textContent = selectedInputInfo ? `${selectedInputInfo.name} (${s.selectedInput})` : s.selectedInput;
         updateSliderProgress();
         updateOverlay();
+        updateSettingsForm();
+        updateServerName();
+        updateAutoconnectButton();
       });
 
       // Incremental updates
@@ -358,12 +544,14 @@
         renderInputsList();
       });
       socket.on("outputs", (d) => {
+        availableOutputsList = d.outputs;
         renderOutputsList(d.outputs);
         renderActiveOutputs();
       });
       socket.on("input", (d) => {
         currentInput = d.id;
-        curInputText.textContent = d.id;
+        const switchedInputInfo = availableInputsList.find(input => input.id === d.id);
+        curInputText.textContent = switchedInputInfo ? `${switchedInputInfo.name} (${d.id})` : d.id;
         if (d.id !== lastEmittedInput) {
           const radio = inputsList.querySelector(`input[value="${CSS.escape(d.id)}"]`);
           if (radio) radio.checked = true;
@@ -382,10 +570,11 @@
           });
         }
         renderActiveOutputs();
+        updateAutoconnectButton();
       });
       socket.on("volume", (d) => {
         currentVolume = d.value;
-        curVolumeText.textContent = String(d.value);
+        curVolumeText.textContent = d.value + "%";
         if (!isUserDraggingVolume && d.value !== lastEmittedVolume) {
           volumeRange.value = d.value;
           updateSliderProgress();
@@ -415,6 +604,165 @@
       socket.on("connect_error", (error) => {
         showError("Connection error: " + error.message);
       });
+
+      // Config and autoconnect events
+      socket.on("config", (c) => {
+        currentConfig = c;
+        updateSettingsForm();
+        updateServerName();
+      });
+      socket.on("autoconnect", (d) => {
+        currentAutoconnectState = d.state;
+        updateAutoconnectButton();
+        renderActiveOutputs();
+      });
+      socket.on("rmsLevel", (d) => {
+        const indicators = inputsList.querySelectorAll(".input-level-indicator");
+        indicators.forEach((indicator) => {
+          const isSelected = indicator.dataset.inputId === currentInput;
+          if (!isSelected) {
+            indicator.style.width = "0px";
+            indicator.style.minWidth = "0px";
+            return;
+          }
+          const isListening = currentAutoconnectState !== "paused" && currentConfig.autoconnectEnabled;
+          if (!isListening) {
+            // Dimmed dot — not listening
+            indicator.style.width = "6px";
+            indicator.style.minWidth = "6px";
+            indicator.style.backgroundColor = "#2a2a2a";
+          } else if (d.level < 0.001) {
+            // Grey dot — listening, no signal
+            indicator.style.width = "6px";
+            indicator.style.minWidth = "6px";
+            indicator.style.backgroundColor = "#555";
+          } else {
+            // Green bar — proportional to signal level
+            const widthPx = 6 + Math.min(80, (d.level / 0.3) * 80);
+            indicator.style.width = widthPx + "px";
+            indicator.style.minWidth = "6px";
+            indicator.style.backgroundColor = "#4CAF50";
+          }
+        });
+      });
+
+      // Autoconnect controls
+      function toggleAutoconnect() {
+        const newState = currentAutoconnectState === "paused" ? "listening" : "paused";
+        socket.emit("setAutoconnect", { state: newState });
+      }
+
+      function updateAutoconnectButton() {
+        const controls = document.getElementById("autoconnectControls");
+        const hint = document.getElementById("autoconnectDisabledHint");
+        const isEnabled = currentConfig.autoconnectEnabled;
+
+        if (!isEnabled && currentAutoconnectState === "paused") {
+          controls.style.display = "none";
+          hint.style.display = "";
+          return;
+        }
+
+        controls.style.display = "flex";
+        hint.style.display = "none";
+
+        const button = document.getElementById("autoconnectButton");
+        const statusText = document.getElementById("autoconnectStatusText");
+        const isPaused = currentAutoconnectState === "paused";
+
+        button.className = "autoconnect-button " + (isPaused ? "paused" : "active");
+        const earPath = '<path d="M8.5 1A4.5 4.5 0 0 0 4 5.5v7.047a2.453 2.453 0 0 0 4.75.861l.512-1.363a5.6 5.6 0 0 1 .816-1.46l2.008-2.581A4.34 4.34 0 0 0 8.66 1zM3 5.5A5.5 5.5 0 0 1 8.5 0h.16a5.34 5.34 0 0 1 4.215 8.618l-2.008 2.581a4.6 4.6 0 0 0-.67 1.197l-.51 1.363A3.453 3.453 0 0 1 3 12.547zM8.5 4A1.5 1.5 0 0 0 7 5.5v2.695q.168-.09.332-.192c.327-.208.577-.44.72-.727a.5.5 0 1 1 .895.448c-.256.513-.673.865-1.079 1.123A9 9 0 0 1 7 9.313V11.5a.5.5 0 0 1-1 0v-6a2.5 2.5 0 0 1 5 0V6a.5.5 0 0 1-1 0v-.5A1.5 1.5 0 0 0 8.5 4"/>';
+        const slashLine = '<line x1="1" y1="15" x2="15" y2="1" stroke="currentColor" stroke-width="1.5"/>';
+        const isActivelyListening = !isPaused && currentOutputs.length === 0;
+        if (isPaused) {
+          button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">${earPath}${slashLine}</svg>`;
+          button.style.opacity = "0.5";
+        } else {
+          button.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">${earPath}</svg>`;
+          button.style.opacity = isActivelyListening ? "1" : "0.5";
+        }
+
+        let label;
+        if (isPaused) {
+          label = "Autoconnect paused";
+        } else if (currentAutoconnectState === "detecting") {
+          label = "Connecting...";
+        } else if (currentOutputs.length > 0) {
+          label = "Connected";
+        } else {
+          label = "Autoconnect listening";
+        }
+        statusText.textContent = label;
+      }
+
+      // Settings
+      function updateServerName() {
+        const header = document.getElementById("serverName");
+        header.textContent = currentConfig.displayName || "BabelPod";
+      }
+
+      function updateSettingsForm() {
+        document.getElementById("settingsDisplayName").value = currentConfig.displayName || "";
+        document.getElementById("settingsAutoconnectEnabled").checked = currentConfig.autoconnectEnabled || false;
+        document.getElementById("settingsInputMode").value = (currentConfig.autoconnectThreshold || 0.002) >= 0.008 ? "line" : "phono";
+        document.getElementById("settingsDefaultVolume").value = currentConfig.defaultVolume || 50;
+        updateSettingsVolumeProgress();
+
+        // Populate default input select
+        const defaultInputSelect = document.getElementById("settingsDefaultInput");
+        while (defaultInputSelect.firstChild) defaultInputSelect.removeChild(defaultInputSelect.firstChild);
+        availableInputsList.forEach((item) => {
+          const opt = document.createElement("option");
+          opt.value = item.id;
+          opt.textContent = item.name;
+          if (item.id === currentConfig.defaultInputId) opt.selected = true;
+          defaultInputSelect.appendChild(opt);
+        });
+
+        // Populate default outputs checkboxes
+        const defaultOutputsDiv = document.getElementById("settingsDefaultOutputs");
+        while (defaultOutputsDiv.firstChild) defaultOutputsDiv.removeChild(defaultOutputsDiv.firstChild);
+        availableOutputsList.forEach((output) => {
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = output.id;
+          checkbox.checked = (currentConfig.defaultOutputIds || []).includes(output.id);
+          label.appendChild(checkbox);
+          label.appendChild(document.createTextNode(output.name));
+          defaultOutputsDiv.appendChild(label);
+        });
+      }
+
+      const settingsVolumeRange = document.getElementById("settingsDefaultVolume");
+      function updateSettingsVolumeProgress() {
+        const value = settingsVolumeRange.value;
+        const percentage = (value / 100) * 100;
+        settingsVolumeRange.style.setProperty("--progress", `${percentage}%`);
+        document.getElementById("settingsVolumeLabel").textContent = value + "%";
+      }
+      settingsVolumeRange.addEventListener("input", updateSettingsVolumeProgress);
+      updateSettingsVolumeProgress();
+
+      function saveSettings() {
+        const defaultOutputCheckboxes = document.getElementById("settingsDefaultOutputs").querySelectorAll("input[type=checkbox]");
+        const selectedDefaultOutputs = [];
+        defaultOutputCheckboxes.forEach((cb) => {
+          if (cb.checked) selectedDefaultOutputs.push(cb.value);
+        });
+
+        const inputMode = document.getElementById("settingsInputMode").value;
+        const autoconnectThreshold = inputMode === "line" ? 0.01 : 0.002;
+
+        socket.emit("setConfig", {
+          displayName: document.getElementById("settingsDisplayName").value,
+          defaultInputId: document.getElementById("settingsDefaultInput").value,
+          defaultOutputIds: selectedDefaultOutputs,
+          defaultVolume: Number(document.getElementById("settingsDefaultVolume").value),
+          autoconnectEnabled: document.getElementById("settingsAutoconnectEnabled").checked,
+          autoconnectThreshold: autoconnectThreshold
+        });
+      }
 
       function onOutputCheckChange(e) {
         const cbs = outputsListDiv.querySelectorAll("input[type=checkbox]");

@@ -85,9 +85,11 @@ The SwiftUI client lives at `/Users/ben/Development/BabelUI` (separate repo: `ni
 ## Workflow
 
 - **Always use branches and PRs.** Do not commit directly to master/main. Squash merge and delete the branch after merging.
+- **Prefer new commits over amending.** Amending pushed commits should be extremely rare. Only amend unpushed commits when the change is a correction to that commit, not new work. When in doubt, create a new commit.
 - **Lint and build after every change.** Run `node -c index.js` after any server edit. Build the iOS app after any Swift edit.
 - **Ask before making breaking API changes.** The API has multiple clients (web UI, iOS app). Discuss versioning strategy before changing event names, payload shapes, or removing events.
 - **iOS and web UI must have feature parity.** Any feature added to one client must be added to the other.
+- **Always include PR URLs.** When referencing pull requests, include the full URL so they're clickable.
 
 ## Code Style
 
