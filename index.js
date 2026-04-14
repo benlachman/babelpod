@@ -269,8 +269,10 @@ function tickAutoconnect(rmsLevel) {
       break;
 
     case 'connected':
-      if (rmsLevel <= threshold) {
-        logStateTransition('connected', 'silence', rmsLevel, `below threshold`);
+      // Hysteresis: only leave connected when RMS drops well below start threshold
+      // This prevents rapid flip-flopping during quiet music passages
+      if (rmsLevel <= threshold / 4) {
+        logStateTransition('connected', 'silence', rmsLevel, `below stop threshold ${(threshold/4).toFixed(4)}`);
         autoconnectState.state = 'silence';
         autoconnectState.silenceSince = now;
         emitAutoconnectState();
@@ -283,6 +285,11 @@ function tickAutoconnect(rmsLevel) {
         autoconnectState.state = 'connected';
         autoconnectState.silenceSince = null;
         emitAutoconnectState();
+        // If outputs were manually cleared while in silence, re-activate defaults
+        if (selectedOutputs.length === 0) {
+          log.info('[autoconnect] outputs were cleared during silence; re-activating defaults');
+          activateDefaultOutputs();
+        }
       } else if (now - autoconnectState.silenceSince >= AUTOCONNECT_SILENCE_TIMEOUT_MS) {
         const silentFor = now - autoconnectState.silenceSince;
         logStateTransition('silence', 'idle', rmsLevel, `silent for ${Math.round(silentFor/1000)}s`);
