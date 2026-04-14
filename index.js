@@ -45,7 +45,7 @@ const DEFAULT_CONFIG = {
   defaultOutputIds: [],
   defaultVolume: 50,
   autoconnectEnabled: false,
-  autoconnectThreshold: 0.002
+  autoconnectThreshold: 0.005
 };
 
 let config = { ...DEFAULT_CONFIG };
@@ -223,18 +223,29 @@ let lastRmsLogTime = 0;
 let maxRmsSinceLastLog = 0;
 const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
 
+// Smoothed RMS via exponential moving average — distinguishes sustained
+// music from transient spikes like surface noise pops.
+// alpha=0.15 with ~10 samples/sec ≈ 1s time constant.
+let smoothedRms = 0;
+const RMS_SMOOTHING_ALPHA = 0.15;
+
 function logStateTransition(fromState, toState, rmsLevel, reason) {
   log.info(`[autoconnect] ${fromState} → ${toState} (rms=${rmsLevel.toFixed(4)}, reason=${reason})`);
 }
 
-function tickAutoconnect(rmsLevel) {
+function tickAutoconnect(rawRms) {
   const threshold = config.autoconnectThreshold || 0.002;
   const now = Date.now();
 
+  // Smoothed RMS filters transient spikes (surface noise pops) while
+  // preserving sustained signal detection (music). Used for steady-state
+  // decisions; raw RMS is used for initial detection to catch transients fast.
+  smoothedRms = RMS_SMOOTHING_ALPHA * rawRms + (1 - RMS_SMOOTHING_ALPHA) * smoothedRms;
+
   // Periodic RMS sample logging
-  if (rmsLevel > maxRmsSinceLastLog) maxRmsSinceLastLog = rmsLevel;
+  if (rawRms > maxRmsSinceLastLog) maxRmsSinceLastLog = rawRms;
   if (now - lastRmsLogTime >= RMS_LOG_INTERVAL_MS) {
-    log.debug(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_rms=${maxRmsSinceLastLog.toFixed(4)} current_rms=${rmsLevel.toFixed(4)}`);
+    log.debug(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_raw=${maxRmsSinceLastLog.toFixed(4)} smoothed=${smoothedRms.toFixed(4)}`);
     lastRmsLogTime = now;
     maxRmsSinceLastLog = 0;
   }
@@ -244,8 +255,9 @@ function tickAutoconnect(rmsLevel) {
       return;
 
     case 'idle':
-      if (rmsLevel > threshold) {
-        logStateTransition('idle', 'detecting', rmsLevel, `above threshold ${threshold}`);
+      // Use raw RMS — catch transient signal like needle drop immediately
+      if (rawRms > threshold) {
+        logStateTransition('idle', 'detecting', rawRms, `raw above threshold ${threshold}`);
         autoconnectState.state = 'detecting';
         autoconnectState.detectingSince = now;
         emitAutoconnectState();
@@ -253,14 +265,16 @@ function tickAutoconnect(rmsLevel) {
       break;
 
     case 'detecting':
-      if (rmsLevel <= threshold) {
+      // Use raw RMS for sustain check — filters pops (they don't sustain 250ms)
+      // but still catches sustained lead-in groove noise
+      if (rawRms <= threshold) {
         const heldFor = now - autoconnectState.detectingSince;
-        logStateTransition('detecting', 'idle', rmsLevel, `dropped after ${heldFor}ms (needed ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms)`);
+        logStateTransition('detecting', 'idle', rawRms, `dropped after ${heldFor}ms (needed ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms)`);
         autoconnectState.state = 'idle';
         autoconnectState.detectingSince = null;
         emitAutoconnectState();
       } else if (now - autoconnectState.detectingSince >= AUTOCONNECT_DETECT_SUSTAIN_MS) {
-        logStateTransition('detecting', 'connected', rmsLevel, `sustained ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms`);
+        logStateTransition('detecting', 'connected', rawRms, `sustained ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms`);
         autoconnectState.state = 'connected';
         autoconnectState.detectingSince = null;
         emitAutoconnectState();
@@ -269,10 +283,10 @@ function tickAutoconnect(rmsLevel) {
       break;
 
     case 'connected':
-      // Hysteresis: only leave connected when RMS drops well below start threshold
-      // This prevents rapid flip-flopping during quiet music passages
-      if (rmsLevel <= threshold / 4) {
-        logStateTransition('connected', 'silence', rmsLevel, `below stop threshold ${(threshold/4).toFixed(4)}`);
+      // Use SMOOTHED RMS — don't flip to silence on brief quiet passages
+      // or between-track gaps. Hysteresis: only leave when well below threshold.
+      if (smoothedRms <= threshold / 4) {
+        logStateTransition('connected', 'silence', smoothedRms, `smoothed below stop threshold ${(threshold/4).toFixed(4)}`);
         autoconnectState.state = 'silence';
         autoconnectState.silenceSince = now;
         emitAutoconnectState();
@@ -280,8 +294,10 @@ function tickAutoconnect(rmsLevel) {
       break;
 
     case 'silence':
-      if (rmsLevel > threshold) {
-        logStateTransition('silence', 'connected', rmsLevel, `signal returned`);
+      // Use SMOOTHED RMS — don't flip back to connected on surface noise pops.
+      // Surface noise has brief spikes but low average; music is sustained.
+      if (smoothedRms > threshold) {
+        logStateTransition('silence', 'connected', smoothedRms, `smoothed signal returned`);
         autoconnectState.state = 'connected';
         autoconnectState.silenceSince = null;
         emitAutoconnectState();
