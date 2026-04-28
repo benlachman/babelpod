@@ -136,6 +136,8 @@ class RmsMonitorTransform extends stream.Transform {
   }
 
   _transform(chunk, encoding, callback) {
+    lastInputDataTime = Date.now();
+
     // Skip RMS calculation when autoconnect is paused (save CPU)
     if (autoconnectState.state === 'paused') {
       callback(null, chunk);
@@ -167,6 +169,28 @@ class RmsMonitorTransform extends stream.Transform {
 
 let rmsMonitor = new RmsMonitorTransform();
 let lastRmsEmitTime = 0;
+
+// =======================
+// 4b-ii) Input stream watchdog
+// =======================
+// Detects stalled/dead input streams that don't produce data.
+// arecord can die silently without triggering the 'exit' event,
+// or the stream can break without the process exiting.
+const INPUT_WATCHDOG_INTERVAL_MS = 15000; // check every 15s
+const INPUT_WATCHDOG_TIMEOUT_MS = 30000;  // 30s without data = dead
+let lastInputDataTime = Date.now();
+
+setInterval(() => {
+  if (currentInput === 'void') return;
+  if (!arecordInstance) return;
+
+  const silentDuration = Date.now() - lastInputDataTime;
+  if (silentDuration > INPUT_WATCHDOG_TIMEOUT_MS) {
+    log.warn(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — restarting input ${currentInput}`);
+    inputRestartAttempts = 0; // Reset counter — this is a watchdog recovery, not a rapid failure
+    restartInputDevice(currentInput, 0);
+  }
+}, INPUT_WATCHDOG_INTERVAL_MS);
 
 // =======================
 // 4c) Autoconnect state machine
@@ -456,10 +480,25 @@ function startArecordForDevice(devId, isRetry = false) {
     io.emit('input', { id: currentInput });
     io.emit('status', { message: `Input ${isRetry ? 'reconnected' : 'switched'} to ${currentInput}` });
     console.log(`Successfully started arecord for device: ${devId}`);
+    startStabilityTimer();
   } catch (e) {
     console.error(`Failed to start arecord for device ${devId}:`, e);
     io.emit('serverError', { message: `Failed to start input: ${e.message}` });
   }
+}
+
+// Reset restart counter after 5 minutes of stable operation
+const INPUT_STABLE_RESET_MS = 300000;
+let inputStableTimer = null;
+
+function startStabilityTimer() {
+  if (inputStableTimer) clearTimeout(inputStableTimer);
+  inputStableTimer = setTimeout(() => {
+    if (inputRestartAttempts > 0) {
+      log.info(`[watchdog] Input stable for 5 minutes — resetting restart counter from ${inputRestartAttempts}`);
+      inputRestartAttempts = 0;
+    }
+  }, INPUT_STABLE_RESET_MS);
 }
 
 // Restart input device (for automatic recovery)
