@@ -186,29 +186,38 @@ describe('Autoconnect State Machine', () => {
     };
   }
 
-  function tickAutoconnect(state, rmsLevel, threshold = 0.002, now = Date.now()) {
+  // Mirrors production logic: raw RMS for initial detection,
+  // smoothed RMS for steady-state decisions, hysteresis on exit
+  function tickAutoconnect(state, rawRms, { threshold = 0.005, smoothedRms = null, now = Date.now() } = {}) {
+    // If smoothedRms not provided, use rawRms (simple tests)
+    const smoothed = smoothedRms !== null ? smoothedRms : rawRms;
+
     switch (state.state) {
       case 'paused':
         return state;
       case 'idle':
-        if (rmsLevel > threshold) {
+        // Raw RMS — catch transients fast
+        if (rawRms > threshold) {
           return { ...state, state: 'detecting', detectingSince: now };
         }
         return state;
       case 'detecting':
-        if (rmsLevel <= threshold) {
+        // Raw RMS for sustain check
+        if (rawRms <= threshold) {
           return { ...state, state: 'idle', detectingSince: null };
         } else if (now - state.detectingSince >= DETECT_SUSTAIN_MS) {
           return { ...state, state: 'connected', detectingSince: null };
         }
         return state;
       case 'connected':
-        if (rmsLevel <= threshold) {
+        // Smoothed RMS with hysteresis — threshold/4 to exit
+        if (smoothed <= threshold / 4) {
           return { ...state, state: 'silence', silenceSince: now };
         }
         return state;
       case 'silence':
-        if (rmsLevel > threshold) {
+        // Smoothed RMS to return
+        if (smoothed > threshold) {
           return { ...state, state: 'connected', silenceSince: null };
         } else if (now - state.silenceSince >= SILENCE_TIMEOUT_MS) {
           return { ...state, state: 'idle', silenceSince: null };
@@ -225,7 +234,7 @@ describe('Autoconnect State Machine', () => {
     expect(result.state).toBe('paused');
   });
 
-  test('should transition from idle to detecting on signal', () => {
+  test('should transition from idle to detecting on raw signal above threshold', () => {
     const state = createState('idle');
     const result = tickAutoconnect(state, 0.01);
     expect(result.state).toBe('detecting');
@@ -238,50 +247,73 @@ describe('Autoconnect State Machine', () => {
     expect(result.state).toBe('idle');
   });
 
-  test('should return to idle from detecting when signal drops', () => {
+  test('should return to idle from detecting when raw signal drops', () => {
     const state = { ...createState('detecting'), detectingSince: Date.now() };
     const result = tickAutoconnect(state, 0.001);
     expect(result.state).toBe('idle');
   });
 
-  test('should transition from detecting to playing after sustain period', () => {
+  test('should transition from detecting to connected after sustain period', () => {
     const now = Date.now();
     const state = { ...createState('detecting'), detectingSince: now - 300 };
-    const result = tickAutoconnect(state, 0.01, 0.002, now);
+    const result = tickAutoconnect(state, 0.01, { now });
     expect(result.state).toBe('connected');
   });
 
   test('should stay detecting before sustain period expires', () => {
     const now = Date.now();
     const state = { ...createState('detecting'), detectingSince: now - 100 };
-    const result = tickAutoconnect(state, 0.01, 0.002, now);
+    const result = tickAutoconnect(state, 0.01, { now });
     expect(result.state).toBe('detecting');
   });
 
-  test('should transition from playing to silence when signal drops', () => {
+  // Hysteresis tests: connected → silence requires smoothed RMS below threshold/4
+  test('should stay connected when smoothed is above stop threshold', () => {
     const state = createState('connected');
-    const result = tickAutoconnect(state, 0.001);
-    expect(result.state).toBe('silence');
-    expect(result.silenceSince).not.toBeNull();
+    // smoothed at 0.002, which is above 0.005/4 = 0.00125
+    const result = tickAutoconnect(state, 0.002, { smoothedRms: 0.002 });
+    expect(result.state).toBe('connected');
   });
 
-  test('should return from silence to playing when signal resumes', () => {
-    const state = { ...createState('silence'), silenceSince: Date.now() };
-    const result = tickAutoconnect(state, 0.01);
+  test('should transition to silence only when smoothed drops below threshold/4', () => {
+    const state = createState('connected');
+    // smoothed at 0.001, which is below 0.005/4 = 0.00125
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001 });
+    expect(result.state).toBe('silence');
+  });
+
+  test('should NOT transition to silence on brief raw dip if smoothed is still high', () => {
+    const state = createState('connected');
+    // Raw dips but smoothed stays up — this is the key hysteresis test
+    const result = tickAutoconnect(state, 0.0005, { smoothedRms: 0.003 });
     expect(result.state).toBe('connected');
+  });
+
+  // Silence → connected uses smoothed RMS (filters surface noise pops)
+  test('should return from silence to connected when smoothed signal rises', () => {
+    const state = { ...createState('silence'), silenceSince: Date.now() };
+    const result = tickAutoconnect(state, 0.01, { smoothedRms: 0.01 });
+    expect(result.state).toBe('connected');
+  });
+
+  test('should stay in silence when only raw spikes but smoothed is low', () => {
+    const state = { ...createState('silence'), silenceSince: Date.now() };
+    // Raw spike (surface noise pop) but smoothed stays below threshold
+    const result = tickAutoconnect(state, 0.01, { smoothedRms: 0.002 });
+    expect(result.state).toBe('silence');
   });
 
   test('should transition from silence to idle after timeout', () => {
     const now = Date.now();
     const state = { ...createState('silence'), silenceSince: now - 300001 };
-    const result = tickAutoconnect(state, 0.001, 0.002, now);
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001, now });
     expect(result.state).toBe('idle');
   });
 
   test('should stay in silence before timeout expires', () => {
     const now = Date.now();
     const state = { ...createState('silence'), silenceSince: now - 60000 };
-    const result = tickAutoconnect(state, 0.001, 0.002, now);
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001, now });
     expect(result.state).toBe('silence');
   });
 });
