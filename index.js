@@ -18,6 +18,76 @@ const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
+const path = require('path');
+
+// =======================
+// 1a) Log level
+// =======================
+// LOG_LEVEL env var: debug | info | warn | error (default: info)
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const currentLogLevel = LOG_LEVELS[(process.env.LOG_LEVEL || 'info').toLowerCase()] ?? LOG_LEVELS.info;
+const log = {
+  debug: (...args) => { if (currentLogLevel <= LOG_LEVELS.debug) console.log(...args); },
+  info: (...args) => { if (currentLogLevel <= LOG_LEVELS.info) console.log(...args); },
+  warn: (...args) => { if (currentLogLevel <= LOG_LEVELS.warn) console.warn(...args); },
+  error: (...args) => { if (currentLogLevel <= LOG_LEVELS.error) console.error(...args); },
+};
+log.info(`Log level: ${process.env.LOG_LEVEL || 'info'}`);
+
+// =======================
+// 1b) Instance configuration
+// =======================
+const CONFIG_PATH = path.join(__dirname, 'babelpod.config.json');
+
+const DEFAULT_CONFIG = {
+  displayName: hostname().replace('.local', ''),
+  defaultInputId: null,
+  defaultOutputIds: [],
+  defaultVolume: 50,
+  autoconnectEnabled: false,
+  autoconnectThreshold: 0.005
+};
+
+let config = { ...DEFAULT_CONFIG };
+
+function loadConfig() {
+  try {
+    const data = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const parsed = JSON.parse(data);
+    // Only keep known fields; drop legacy keys
+    const clean = {};
+    for (const key of Object.keys(DEFAULT_CONFIG)) {
+      if (key in parsed) clean[key] = parsed[key];
+    }
+    config = { ...DEFAULT_CONFIG, ...clean };
+    console.log("Loaded config:", config);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      console.log("No config file found, using defaults");
+    } else {
+      console.error("Error reading config file, using defaults:", error.message);
+    }
+    config = { ...DEFAULT_CONFIG };
+  }
+}
+
+function saveConfig(partial) {
+  // Only merge known fields to avoid polluting config with legacy keys
+  const clean = {};
+  for (const key of Object.keys(DEFAULT_CONFIG)) {
+    if (key in partial) clean[key] = partial[key];
+  }
+  config = { ...config, ...clean };
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+    console.log("Config saved:", config);
+  } catch (error) {
+    console.error("Error saving config:", error.message);
+  }
+  io.emit('config', config);
+}
+
+loadConfig();
 
 // Bluetooth support - optional, may not be available on all systems
 let blue = null;
@@ -56,6 +126,251 @@ DiscardSink.prototype._write = function (_chunk, _enc, cb) {
 const fallbackSink = new DiscardSink();
 
 // =======================
+// 4b) RMS audio level monitor
+// =======================
+class RmsMonitorTransform extends stream.Transform {
+  constructor() {
+    super();
+    this.currentRms = 0;
+    this.chunkCount = 0;
+  }
+
+  _transform(chunk, encoding, callback) {
+    lastInputDataTime = Date.now();
+
+    // Skip RMS calculation when autoconnect is paused (save CPU)
+    if (autoconnectState.state === 'paused') {
+      callback(null, chunk);
+      return;
+    }
+
+    this.chunkCount++;
+    // Process every 4th chunk for efficiency (~5-10 readings/sec)
+    if (this.chunkCount % 4 === 0) {
+      const sampleCount = Math.floor(chunk.length / 2);
+      let sumOfSquares = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const sample = chunk.readInt16LE(i * 2) / 32768;
+        sumOfSquares += sample * sample;
+      }
+      this.currentRms = Math.sqrt(sumOfSquares / sampleCount);
+      this.emit('rms', this.currentRms);
+
+      // Throttled emission to clients (~4Hz)
+      const now = Date.now();
+      if (now - lastRmsEmitTime >= 250) {
+        lastRmsEmitTime = now;
+        io.emit('rmsLevel', { level: this.currentRms });
+      }
+    }
+    callback(null, chunk);
+  }
+}
+
+let rmsMonitor = new RmsMonitorTransform();
+let lastRmsEmitTime = 0;
+
+// =======================
+// 4b-ii) Input stream watchdog
+// =======================
+// Detects stalled/dead input streams that don't produce data.
+// arecord can die silently without triggering the 'exit' event,
+// or the stream can break without the process exiting.
+const INPUT_WATCHDOG_INTERVAL_MS = 15000; // check every 15s
+const INPUT_WATCHDOG_TIMEOUT_MS = 30000;  // 30s without data = dead
+let lastInputDataTime = Date.now();
+
+setInterval(() => {
+  if (currentInput === 'void') return;
+  if (!arecordInstance) return;
+
+  const silentDuration = Date.now() - lastInputDataTime;
+  if (silentDuration > INPUT_WATCHDOG_TIMEOUT_MS) {
+    log.warn(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — restarting input ${currentInput}`);
+    // Suppress exit handler auto-restart — the watchdog is handling recovery
+    isManualInputSwitch = true;
+    inputRestartAttempts = 0;
+    lastInputDataTime = Date.now(); // Prevent re-firing while restart is in progress
+    restartInputDevice(currentInput, 0);
+  }
+}, INPUT_WATCHDOG_INTERVAL_MS);
+
+// =======================
+// 4c) Autoconnect state machine
+// =======================
+const AUTOCONNECT_DETECT_SUSTAIN_MS = 250;
+const AUTOCONNECT_SILENCE_TIMEOUT_MS = 300000; // 5 minutes
+
+let autoconnectState = {
+  state: config.autoconnectEnabled ? 'idle' : 'paused',
+  detectingSince: null,
+  silenceSince: null,
+};
+
+function emitAutoconnectState() {
+  io.emit('autoconnect', { state: autoconnectState.state });
+}
+
+function activateDefaultOutputs() {
+  if (config.defaultOutputIds.length === 0) {
+    io.emit('status', { message: 'Autoconnect: no default outputs configured' });
+    console.log("Autoconnect: no default outputs configured");
+    return;
+  }
+
+  volume = config.defaultVolume || 50;
+  const validOutputIds = config.defaultOutputIds.filter(outputId =>
+    unifiedOutputs.some(output => output.uiId === outputId)
+  );
+  if (validOutputIds.length > 0) {
+    syncOutputs(validOutputIds);
+    io.emit('output', { ids: validOutputIds });
+    io.emit('volume', { value: volume });
+    const missing = config.defaultOutputIds.length - validOutputIds.length;
+    const message = missing > 0
+      ? `Autoconnect activated (${missing} default output${missing > 1 ? 's' : ''} unavailable)`
+      : 'Autoconnect activated';
+    io.emit('status', { message });
+    console.log("Autoconnect: activated default outputs:", validOutputIds);
+  } else {
+    io.emit('serverError', { message: 'Autoconnect: default outputs not available' });
+    console.log("Autoconnect: all default outputs unavailable:", config.defaultOutputIds);
+  }
+}
+
+function deactivateOutputs() {
+  syncOutputs([]);
+  io.emit('output', { ids: [] });
+  io.emit('status', { message: 'Autoconnect: speakers released after silence' });
+  console.log("Autoconnect: deactivated outputs after silence timeout");
+}
+
+// Periodic RMS logging — helps diagnose missed triggers
+let lastRmsLogTime = 0;
+let maxRmsSinceLastLog = 0;
+const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
+
+// Smoothed RMS via exponential moving average — distinguishes sustained
+// music from transient spikes like surface noise pops.
+// alpha=0.15 with ~10 samples/sec ≈ 1s time constant.
+let smoothedRms = 0;
+const RMS_SMOOTHING_ALPHA = 0.15;
+
+function logStateTransition(fromState, toState, rmsLevel, reason) {
+  log.info(`[autoconnect] ${fromState} → ${toState} (rms=${rmsLevel.toFixed(4)}, reason=${reason})`);
+}
+
+function tickAutoconnect(rawRms) {
+  const threshold = config.autoconnectThreshold || 0.002;
+  const now = Date.now();
+
+  // Smoothed RMS filters transient spikes (surface noise pops) while
+  // preserving sustained signal detection (music). Used for steady-state
+  // decisions; raw RMS is used for initial detection to catch transients fast.
+  smoothedRms = RMS_SMOOTHING_ALPHA * rawRms + (1 - RMS_SMOOTHING_ALPHA) * smoothedRms;
+
+  // Periodic RMS sample logging
+  if (rawRms > maxRmsSinceLastLog) maxRmsSinceLastLog = rawRms;
+  if (now - lastRmsLogTime >= RMS_LOG_INTERVAL_MS) {
+    log.debug(`[autoconnect] state=${autoconnectState.state} threshold=${threshold} peak_raw=${maxRmsSinceLastLog.toFixed(4)} smoothed=${smoothedRms.toFixed(4)}`);
+    lastRmsLogTime = now;
+    maxRmsSinceLastLog = 0;
+  }
+
+  switch (autoconnectState.state) {
+    case 'paused':
+      return;
+
+    case 'idle':
+      // Use raw RMS — catch transient signal like needle drop immediately
+      if (rawRms > threshold) {
+        logStateTransition('idle', 'detecting', rawRms, `raw above threshold ${threshold}`);
+        autoconnectState.state = 'detecting';
+        autoconnectState.detectingSince = now;
+        emitAutoconnectState();
+      }
+      break;
+
+    case 'detecting':
+      // Use raw RMS for sustain check — filters pops (they don't sustain 250ms)
+      // but still catches sustained lead-in groove noise
+      if (rawRms <= threshold) {
+        const heldFor = now - autoconnectState.detectingSince;
+        logStateTransition('detecting', 'idle', rawRms, `dropped after ${heldFor}ms (needed ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms)`);
+        autoconnectState.state = 'idle';
+        autoconnectState.detectingSince = null;
+        emitAutoconnectState();
+      } else if (now - autoconnectState.detectingSince >= AUTOCONNECT_DETECT_SUSTAIN_MS) {
+        logStateTransition('detecting', 'connected', rawRms, `sustained ${AUTOCONNECT_DETECT_SUSTAIN_MS}ms`);
+        autoconnectState.state = 'connected';
+        autoconnectState.detectingSince = null;
+        emitAutoconnectState();
+        activateDefaultOutputs();
+      }
+      break;
+
+    case 'connected':
+      // Use SMOOTHED RMS — don't flip to silence on brief quiet passages
+      // or between-track gaps. Hysteresis: only leave when well below threshold.
+      if (smoothedRms <= threshold / 4) {
+        logStateTransition('connected', 'silence', smoothedRms, `smoothed below stop threshold ${(threshold/4).toFixed(4)}`);
+        autoconnectState.state = 'silence';
+        autoconnectState.silenceSince = now;
+        emitAutoconnectState();
+      }
+      break;
+
+    case 'silence':
+      // Use SMOOTHED RMS — don't flip back to connected on surface noise pops.
+      // Surface noise has brief spikes but low average; music is sustained.
+      if (smoothedRms > threshold) {
+        logStateTransition('silence', 'connected', smoothedRms, `smoothed signal returned`);
+        autoconnectState.state = 'connected';
+        autoconnectState.silenceSince = null;
+        emitAutoconnectState();
+        // If outputs were manually cleared while in silence, re-activate defaults
+        if (selectedOutputs.length === 0) {
+          log.info('[autoconnect] outputs were cleared during silence; re-activating defaults');
+          activateDefaultOutputs();
+        }
+      } else if (now - autoconnectState.silenceSince >= AUTOCONNECT_SILENCE_TIMEOUT_MS) {
+        const silentFor = now - autoconnectState.silenceSince;
+        logStateTransition('silence', 'idle', rmsLevel, `silent for ${Math.round(silentFor/1000)}s`);
+        autoconnectState.state = 'idle';
+        autoconnectState.silenceSince = null;
+        emitAutoconnectState();
+        deactivateOutputs();
+      }
+      break;
+  }
+}
+
+function setAutoconnectState(newState) {
+  if (newState === 'paused') {
+    autoconnectState.state = 'paused';
+    autoconnectState.detectingSince = null;
+    autoconnectState.silenceSince = null;
+    // Master kill switch — stop all outputs
+    syncOutputs([]);
+    io.emit('output', { ids: [] });
+    emitAutoconnectState();
+    console.log("Autoconnect: paused (all outputs stopped)");
+  } else if (newState === 'listening') {
+    autoconnectState.state = 'idle'; // Enter idle, let RMS detection handle the rest
+    autoconnectState.detectingSince = null;
+    autoconnectState.silenceSince = null;
+    emitAutoconnectState();
+    console.log("Autoconnect: armed and listening");
+  }
+}
+
+// Hook RMS readings into autoconnect state machine
+function wireRmsMonitor() {
+  rmsMonitor.on('rms', tickAutoconnect);
+}
+wireRmsMonitor();
+
+// =======================
 // 5) Main audio duplicator
 // =======================
 const duplicator = new stream.PassThrough({ highWaterMark: 65536 });
@@ -91,13 +406,14 @@ function FromVoid() {
 }
 FromVoid.prototype._read = function () { };
 let inputStream = new FromVoid();
-inputStream.pipe(duplicator);
+rmsMonitor.pipe(duplicator);
+inputStream.pipe(rmsMonitor);
 
 // Clean up current input, stop processes
 function cleanupCurrentInput() {
   try {
     if (inputStream) {
-      inputStream.unpipe(duplicator);
+      inputStream.unpipe(rmsMonitor);
       inputStream = null;
     }
     if (arecordInstance) {
@@ -123,16 +439,22 @@ function cleanupCurrentInput() {
 // Kill any orphaned arecord processes for the specified device
 function killOrphanedArecord(devId) {
   if (devId === "void" || !devId) return;
+  // Get the pid of our current arecord so we don't kill it
+  const currentPid = arecordInstance ? arecordInstance.pid : null;
   try {
     const result = execSync(`pgrep -f "arecord.*${devId}"`, { encoding: 'utf8' }).trim();
     if (result) {
-      console.log(`Found orphaned arecord processes for ${devId}, terminating: ${result}`);
-      execSync(`pkill -9 -f "arecord.*${devId}"`);
+      const pids = result.split('\n').filter(pid => pid && Number(pid) !== currentPid);
+      if (pids.length > 0) {
+        log.info(`Found orphaned arecord processes for ${devId}: ${pids.join(', ')}`);
+        for (const pid of pids) {
+          try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { /* already gone */ }
+        }
+      }
     }
   } catch (e) {
-    // pgrep returns non-zero if no processes found, which is fine
     if (e.status !== 1) {
-      console.error(`Error checking for orphaned arecord processes: ${e.message}`);
+      log.error(`Error checking for orphaned arecord processes: ${e.message}`);
     }
   }
 }
@@ -153,7 +475,10 @@ function startArecordForDevice(devId, isRetry = false) {
     inputStream.on('error', (error) => {
       console.error(`Error with input stream for ${devId}:`, error);
     });
-    inputStream.pipe(duplicator);
+    rmsMonitor = new RmsMonitorTransform();
+    wireRmsMonitor();
+    rmsMonitor.pipe(duplicator);
+    inputStream.pipe(rmsMonitor);
 
     if (isRetry) {
       busyRetryAttempts = 0;
@@ -164,10 +489,25 @@ function startArecordForDevice(devId, isRetry = false) {
     io.emit('input', { id: currentInput });
     io.emit('status', { message: `Input ${isRetry ? 'reconnected' : 'switched'} to ${currentInput}` });
     console.log(`Successfully started arecord for device: ${devId}`);
+    startStabilityTimer();
   } catch (e) {
     console.error(`Failed to start arecord for device ${devId}:`, e);
     io.emit('serverError', { message: `Failed to start input: ${e.message}` });
   }
+}
+
+// Reset restart counter after 5 minutes of stable operation
+const INPUT_STABLE_RESET_MS = 300000;
+let inputStableTimer = null;
+
+function startStabilityTimer() {
+  if (inputStableTimer) clearTimeout(inputStableTimer);
+  inputStableTimer = setTimeout(() => {
+    if (inputRestartAttempts > 0) {
+      log.info(`[watchdog] Input stable for 5 minutes — resetting restart counter from ${inputRestartAttempts}`);
+      inputRestartAttempts = 0;
+    }
+  }, INPUT_STABLE_RESET_MS);
 }
 
 // Restart input device (for automatic recovery)
@@ -259,7 +599,7 @@ function setupArecordHandlers(devId, isRetry = false) {
 // =======================
 // 7) Volume & outputs
 // =======================
-let volume = 50;
+let volume = config.defaultVolume || 50;
 let selectedOutputs = [];
 
 let availablePcmOutputs = [];
@@ -297,7 +637,7 @@ function scanPcmDevices() {
 function buildUnifiedOutputs() {
   let local = availablePcmOutputs.map(o => ({
     uiId: o.id,
-    name: o.name + ' (Output)',
+    name: o.name + ' - Output',
     isStereo: false,
     devices: [{ localId: o.id }]
   }));
@@ -328,14 +668,14 @@ function buildUnifiedOutputs() {
       const d = arr[0];
       air.push({
         uiId: 'air:' + d.name,
-        name: (d.name || d.host) + ' (AirPlay)',
+        name: (d.name || d.host) + ' - AirPlay',
         isStereo: false,
         devices: [{ host: d.host, port: d.port, isStereo: false }]
       });
     } else {
       air.push({
         uiId: 'airpair:' + stereoName,
-        name: stereoName + ' (AirPlay Stereo)',
+        name: stereoName + ' - AirPlay Stereo',
         isStereo: true,
         devices: arr.map(d => ({ host: d.host, port: d.port, isStereo: true }))
       });
@@ -363,7 +703,9 @@ function buildStatePayload() {
     outputs: buildCleanOutputs(),
     selectedInput: currentInput,
     selectedOutputs,
-    volume
+    volume,
+    config,
+    autoconnectState: autoconnectState.state
   };
 }
 
@@ -381,9 +723,12 @@ function updateAllInputs() {
 if (!process.env.DISABLE_PCM) {
   console.log("PCM device scanning enabled");
   scanPcmDevices();
-  // Auto-select first available input on startup
+  // Auto-select input on startup: prefer config default, then first available
   if (currentInput === "void" && availablePcmInputs.length > 0) {
-    const autoDevId = availablePcmInputs[0].id;
+    const configuredInput = config.defaultInputId && availablePcmInputs.some(d => d.id === config.defaultInputId)
+      ? config.defaultInputId
+      : availablePcmInputs[0].id;
+    const autoDevId = configuredInput;
     console.log("Auto-selecting input:", autoDevId);
     cleanupCurrentInput();
     currentInput = autoDevId;
@@ -395,7 +740,10 @@ if (!process.env.DISABLE_PCM) {
     inputStream.on('error', (error) => {
       console.error(`Error with auto-selected input stream for ${autoDevId}:`, error);
     });
-    inputStream.pipe(duplicator);
+    rmsMonitor = new RmsMonitorTransform();
+    wireRmsMonitor();
+    rmsMonitor.pipe(duplicator);
+    inputStream.pipe(rmsMonitor);
   }
   setInterval(scanPcmDevices, 10000);
 } else {
@@ -550,20 +898,26 @@ browser.start();
 let advertise = null;
 function advertiseService() {
   try {
-    // use random port if needed, otherwise use 3000
     const p = Number(process.env.BABEL_PORT || 3000);
     advertise = mdns.createAdvertisement(mdns.tcp('babelpod'), p, {
-      name: hostname().replace('.local', ''),
+      name: config.displayName || hostname().replace('.local', ''),
       txt: {
         info: "A BabelPod audio server"
       }
     });
     console.log("Advertising BabelPod service:", advertise);
-
     advertise.start();
   } catch (err) {
     console.log("Error advertising BabelPod service:", err);
   }
+}
+function restartAdvertisement() {
+  try {
+    if (advertise) advertise.stop();
+  } catch (err) {
+    console.error("Error stopping advertisement:", err);
+  }
+  advertiseService();
 }
 advertiseService();
 
@@ -748,7 +1102,10 @@ io.on('connection', socket => {
 
       if (devId === "void") {
         inputStream = new FromVoid();
-        inputStream.pipe(duplicator);
+        rmsMonitor = new RmsMonitorTransform();
+        wireRmsMonitor();
+        rmsMonitor.pipe(duplicator);
+        inputStream.pipe(rmsMonitor);
         io.emit('input', { id: currentInput });
         io.emit('status', { message: `Input switched to ${currentInput}` });
         isManualInputSwitch = false;
@@ -826,6 +1183,38 @@ io.on('connection', socket => {
       console.error("Error changing volume:", e);
       io.emit('serverError', { message: `Failed to change volume: ${e.message}` });
     }
+  });
+
+  socket.on('setConfig', (data) => {
+    if (socket.id !== sessionOwner) return;
+    if (!data || typeof data !== 'object') return;
+
+    console.log("Updating config:", data);
+    const oldDisplayName = config.displayName;
+
+    // Only allow known fields
+    const allowedFields = ['displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'autoconnectEnabled', 'autoconnectThreshold'];
+    const filtered = {};
+    for (const key of allowedFields) {
+      if (key in data) filtered[key] = data[key];
+    }
+
+    saveConfig(filtered);
+
+    if (config.displayName !== oldDisplayName) {
+      restartAdvertisement();
+    }
+
+    io.emit('status', { message: 'Settings saved' });
+  });
+
+  socket.on('setAutoconnect', (data) => {
+    if (socket.id !== sessionOwner) return;
+    const newState = data?.state;
+    if (newState !== 'listening' && newState !== 'paused') return;
+
+    console.log("Setting autoconnect state:", newState);
+    setAutoconnectState(newState);
   });
 
   socket.on('disconnect', () => {

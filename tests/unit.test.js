@@ -119,11 +119,258 @@ describe('BabelPod Utility Functions', () => {
 
   describe('AirPlay Pipe Stability', () => {
     test('should use end:false option for AirPlay pipe', () => {
-      // The pipe to airtunes should use {end: false} for stability
-      // This prevents the stream from being ended when input changes
       const pipeOptions = { end: false };
       expect(pipeOptions.end).toBe(false);
     });
+  });
+});
+
+describe('RMS Audio Level Calculation', () => {
+  function calculateRms(buffer) {
+    const sampleCount = Math.floor(buffer.length / 2);
+    let sumOfSquares = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const sample = buffer.readInt16LE(i * 2) / 32768;
+      sumOfSquares += sample * sample;
+    }
+    return Math.sqrt(sumOfSquares / sampleCount);
+  }
+
+  test('should return 0 for silent audio (all zeros)', () => {
+    const buffer = Buffer.alloc(4096, 0);
+    expect(calculateRms(buffer)).toBe(0);
+  });
+
+  test('should return near 1.0 for maximum amplitude', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(32767, i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0.99);
+    expect(rms).toBeLessThanOrEqual(1.0);
+  });
+
+  test('should return intermediate value for half amplitude', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(16384, i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0.4);
+    expect(rms).toBeLessThan(0.6);
+  });
+
+  test('should handle typical noise floor levels', () => {
+    const buffer = Buffer.alloc(4096);
+    for (let i = 0; i < buffer.length / 2; i++) {
+      buffer.writeInt16LE(Math.round(Math.random() * 60 - 30), i * 2);
+    }
+    const rms = calculateRms(buffer);
+    expect(rms).toBeGreaterThan(0);
+    expect(rms).toBeLessThan(0.002);
+  });
+});
+
+describe('Autoconnect State Machine', () => {
+  const DETECT_SUSTAIN_MS = 250;
+  const SILENCE_TIMEOUT_MS = 300000;
+
+  let autoplayState;
+
+  function createState(initialState = 'idle') {
+    return {
+      state: initialState,
+      detectingSince: null,
+      silenceSince: null,
+    };
+  }
+
+  // Mirrors production logic: raw RMS for initial detection,
+  // smoothed RMS for steady-state decisions, hysteresis on exit
+  function tickAutoconnect(state, rawRms, { threshold = 0.005, smoothedRms = null, now = Date.now() } = {}) {
+    // If smoothedRms not provided, use rawRms (simple tests)
+    const smoothed = smoothedRms !== null ? smoothedRms : rawRms;
+
+    switch (state.state) {
+      case 'paused':
+        return state;
+      case 'idle':
+        // Raw RMS — catch transients fast
+        if (rawRms > threshold) {
+          return { ...state, state: 'detecting', detectingSince: now };
+        }
+        return state;
+      case 'detecting':
+        // Raw RMS for sustain check
+        if (rawRms <= threshold) {
+          return { ...state, state: 'idle', detectingSince: null };
+        } else if (now - state.detectingSince >= DETECT_SUSTAIN_MS) {
+          return { ...state, state: 'connected', detectingSince: null };
+        }
+        return state;
+      case 'connected':
+        // Smoothed RMS with hysteresis — threshold/4 to exit
+        if (smoothed <= threshold / 4) {
+          return { ...state, state: 'silence', silenceSince: now };
+        }
+        return state;
+      case 'silence':
+        // Smoothed RMS to return
+        if (smoothed > threshold) {
+          return { ...state, state: 'connected', silenceSince: null };
+        } else if (now - state.silenceSince >= SILENCE_TIMEOUT_MS) {
+          return { ...state, state: 'idle', silenceSince: null };
+        }
+        return state;
+      default:
+        return state;
+    }
+  }
+
+  test('should stay paused when receiving audio', () => {
+    const state = createState('paused');
+    const result = tickAutoconnect(state, 0.1);
+    expect(result.state).toBe('paused');
+  });
+
+  test('should transition from idle to detecting on raw signal above threshold', () => {
+    const state = createState('idle');
+    const result = tickAutoconnect(state, 0.01);
+    expect(result.state).toBe('detecting');
+    expect(result.detectingSince).not.toBeNull();
+  });
+
+  test('should stay idle when signal is below threshold', () => {
+    const state = createState('idle');
+    const result = tickAutoconnect(state, 0.001);
+    expect(result.state).toBe('idle');
+  });
+
+  test('should return to idle from detecting when raw signal drops', () => {
+    const state = { ...createState('detecting'), detectingSince: Date.now() };
+    const result = tickAutoconnect(state, 0.001);
+    expect(result.state).toBe('idle');
+  });
+
+  test('should transition from detecting to connected after sustain period', () => {
+    const now = Date.now();
+    const state = { ...createState('detecting'), detectingSince: now - 300 };
+    const result = tickAutoconnect(state, 0.01, { now });
+    expect(result.state).toBe('connected');
+  });
+
+  test('should stay detecting before sustain period expires', () => {
+    const now = Date.now();
+    const state = { ...createState('detecting'), detectingSince: now - 100 };
+    const result = tickAutoconnect(state, 0.01, { now });
+    expect(result.state).toBe('detecting');
+  });
+
+  // Hysteresis tests: connected → silence requires smoothed RMS below threshold/4
+  test('should stay connected when smoothed is above stop threshold', () => {
+    const state = createState('connected');
+    // smoothed at 0.002, which is above 0.005/4 = 0.00125
+    const result = tickAutoconnect(state, 0.002, { smoothedRms: 0.002 });
+    expect(result.state).toBe('connected');
+  });
+
+  test('should transition to silence only when smoothed drops below threshold/4', () => {
+    const state = createState('connected');
+    // smoothed at 0.001, which is below 0.005/4 = 0.00125
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001 });
+    expect(result.state).toBe('silence');
+  });
+
+  test('should NOT transition to silence on brief raw dip if smoothed is still high', () => {
+    const state = createState('connected');
+    // Raw dips but smoothed stays up — this is the key hysteresis test
+    const result = tickAutoconnect(state, 0.0005, { smoothedRms: 0.003 });
+    expect(result.state).toBe('connected');
+  });
+
+  // Silence → connected uses smoothed RMS (filters surface noise pops)
+  test('should return from silence to connected when smoothed signal rises', () => {
+    const state = { ...createState('silence'), silenceSince: Date.now() };
+    const result = tickAutoconnect(state, 0.01, { smoothedRms: 0.01 });
+    expect(result.state).toBe('connected');
+  });
+
+  test('should stay in silence when only raw spikes but smoothed is low', () => {
+    const state = { ...createState('silence'), silenceSince: Date.now() };
+    // Raw spike (surface noise pop) but smoothed stays below threshold
+    const result = tickAutoconnect(state, 0.01, { smoothedRms: 0.002 });
+    expect(result.state).toBe('silence');
+  });
+
+  test('should transition from silence to idle after timeout', () => {
+    const now = Date.now();
+    const state = { ...createState('silence'), silenceSince: now - 300001 };
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001, now });
+    expect(result.state).toBe('idle');
+  });
+
+  test('should stay in silence before timeout expires', () => {
+    const now = Date.now();
+    const state = { ...createState('silence'), silenceSince: now - 60000 };
+    const result = tickAutoconnect(state, 0.001, { smoothedRms: 0.001, now });
+    expect(result.state).toBe('silence');
+  });
+});
+
+describe('Config Management', () => {
+  const DEFAULT_CONFIG = {
+    displayName: 'TestPi',
+    defaultInputId: null,
+    defaultOutputIds: [],
+    defaultVolume: 50,
+    autoconnectEnabled: false,
+    autoconnectThreshold: 0.002
+  };
+
+  test('should merge partial config updates', () => {
+    const config = { ...DEFAULT_CONFIG };
+    const partial = { displayName: 'NewName', defaultVolume: 75 };
+    const merged = { ...config, ...partial };
+    expect(merged.displayName).toBe('NewName');
+    expect(merged.defaultVolume).toBe(75);
+    expect(merged.defaultInputId).toBeNull();
+    expect(merged.autoconnectEnabled).toBe(false);
+  });
+
+  test('should preserve unspecified fields during partial update', () => {
+    const config = { ...DEFAULT_CONFIG, displayName: 'Original', autoconnectEnabled: true };
+    const partial = { defaultVolume: 80 };
+    const merged = { ...config, ...partial };
+    expect(merged.displayName).toBe('Original');
+    expect(merged.autoconnectEnabled).toBe(true);
+    expect(merged.defaultVolume).toBe(80);
+  });
+
+  test('should handle empty partial update', () => {
+    const config = { ...DEFAULT_CONFIG };
+    const merged = { ...config, ...{} };
+    expect(merged).toEqual(DEFAULT_CONFIG);
+  });
+
+  test('should validate volume range', () => {
+    const volume = 150;
+    const clamped = Math.max(0, Math.min(100, volume));
+    expect(clamped).toBe(100);
+  });
+
+  test('should validate volume range low', () => {
+    const volume = -10;
+    const clamped = Math.max(0, Math.min(100, volume));
+    expect(clamped).toBe(0);
+  });
+
+  test('should handle missing config fields with defaults', () => {
+    const parsed = { displayName: 'Custom' };
+    const config = { ...DEFAULT_CONFIG, ...parsed };
+    expect(config.displayName).toBe('Custom');
+    expect(config.defaultOutputIds).toEqual([]);
+    expect(config.autoconnectThreshold).toBe(0.002);
   });
 });
 
