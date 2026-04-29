@@ -45,7 +45,7 @@ const DEFAULT_CONFIG = {
   defaultOutputIds: [],
   defaultVolume: 50,
   autoconnectEnabled: false,
-  autoconnectThreshold: 0.005
+  autoconnectThreshold: 0.01
 };
 
 let config = { ...DEFAULT_CONFIG };

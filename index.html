@@ -704,7 +704,7 @@
       function updateSettingsForm() {
         document.getElementById("settingsDisplayName").value = currentConfig.displayName || "";
         document.getElementById("settingsAutoconnectEnabled").checked = currentConfig.autoconnectEnabled || false;
-        document.getElementById("settingsInputMode").value = (currentConfig.autoconnectThreshold || 0.005) < 0.002 ? "line" : "phono";
+        document.getElementById("settingsInputMode").value = (currentConfig.autoconnectThreshold || 0.01) < 0.002 ? "line" : "phono";
         document.getElementById("settingsDefaultVolume").value = currentConfig.defaultVolume || 50;
         updateSettingsVolumeProgress();
 
@@ -754,7 +754,7 @@
         const inputMode = document.getElementById("settingsInputMode").value;
         // Phono mode: signal amplified by preamp (~0.03+ music), higher threshold
         // Line mode: signal not amplified (~0.002 music), lower threshold
-        const autoconnectThreshold = inputMode === "line" ? 0.0005 : 0.005;
+        const autoconnectThreshold = inputMode === "line" ? 0.0005 : 0.01;
 
         socket.emit("setConfig", {
           displayName: document.getElementById("settingsDisplayName").value,
