@@ -187,7 +187,10 @@ setInterval(() => {
   const silentDuration = Date.now() - lastInputDataTime;
   if (silentDuration > INPUT_WATCHDOG_TIMEOUT_MS) {
     log.warn(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — restarting input ${currentInput}`);
-    inputRestartAttempts = 0; // Reset counter — this is a watchdog recovery, not a rapid failure
+    // Suppress exit handler auto-restart — the watchdog is handling recovery
+    isManualInputSwitch = true;
+    inputRestartAttempts = 0;
+    lastInputDataTime = Date.now(); // Prevent re-firing while restart is in progress
     restartInputDevice(currentInput, 0);
   }
 }, INPUT_WATCHDOG_INTERVAL_MS);
@@ -436,16 +439,22 @@ function cleanupCurrentInput() {
 // Kill any orphaned arecord processes for the specified device
 function killOrphanedArecord(devId) {
   if (devId === "void" || !devId) return;
+  // Get the pid of our current arecord so we don't kill it
+  const currentPid = arecordInstance ? arecordInstance.pid : null;
   try {
     const result = execSync(`pgrep -f "arecord.*${devId}"`, { encoding: 'utf8' }).trim();
     if (result) {
-      console.log(`Found orphaned arecord processes for ${devId}, terminating: ${result}`);
-      execSync(`pkill -9 -f "arecord.*${devId}"`);
+      const pids = result.split('\n').filter(pid => pid && Number(pid) !== currentPid);
+      if (pids.length > 0) {
+        log.info(`Found orphaned arecord processes for ${devId}: ${pids.join(', ')}`);
+        for (const pid of pids) {
+          try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { /* already gone */ }
+        }
+      }
     }
   } catch (e) {
-    // pgrep returns non-zero if no processes found, which is fine
     if (e.status !== 1) {
-      console.error(`Error checking for orphaned arecord processes: ${e.message}`);
+      log.error(`Error checking for orphaned arecord processes: ${e.message}`);
     }
   }
 }
