@@ -187,6 +187,19 @@ setInterval(() => {
   const silentDuration = Date.now() - lastInputDataTime;
   if (silentDuration > INPUT_WATCHDOG_TIMEOUT_MS) {
     log.warn(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — restarting input ${currentInput}`);
+
+    // Disconnect outputs first to prevent clicking on speakers during restart
+    if (selectedOutputs.length > 0) {
+      log.info('[watchdog] Disconnecting outputs before input restart');
+      syncOutputs([]);
+      io.emit('output', { ids: [] });
+      if (autoconnectState.state !== 'paused') {
+        autoconnectState.state = 'idle';
+        autoconnectState.silenceSince = null;
+        emitAutoconnectState();
+      }
+    }
+
     // Suppress exit handler auto-restart — the watchdog is handling recovery
     isManualInputSwitch = true;
     inputRestartAttempts = 0;
@@ -480,11 +493,11 @@ function startArecordForDevice(devId, isRetry = false) {
     rmsMonitor.pipe(duplicator);
     inputStream.pipe(rmsMonitor);
 
+    busyRetryAttempts = 0;
     if (isRetry) {
-      busyRetryAttempts = 0;
-      isManualInputSwitch = false;
-    } else {
-      busyRetryAttempts = 0;
+      // Delay resetting the manual switch flag so the old process's
+      // exit handler doesn't trigger a cascading restart
+      setTimeout(() => { isManualInputSwitch = false; }, 1000);
     }
     io.emit('input', { id: currentInput });
     io.emit('status', { message: `Input ${isRetry ? 'reconnected' : 'switched'} to ${currentInput}` });
