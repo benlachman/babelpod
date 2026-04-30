@@ -143,17 +143,17 @@ Update instance configuration. Partial updates allowed — only fields present a
   "defaultInputId": "plughw:0,0",
   "defaultOutputIds": ["air:Kitchen", "air:Living Room"],
   "defaultVolume": 50,
-  "autoplayEnabled": true,
-  "autoplayThreshold": 0.002
+  "autoconnectEnabled": true,
+  "autoconnectThreshold": 0.01
 }
 ```
 
-### `setAutoplay`
+### `setAutoconnect`
 
-Toggle the autoplay state machine. `"playing"` arms autoplay (enters idle/listening). `"paused"` is a master kill switch — stops all outputs immediately. Requires session ownership.
+Toggle the autoconnect state machine. `"listening"` arms autoconnect (enters idle/listening). `"paused"` is a master kill switch — stops all outputs immediately. Requires session ownership.
 
 ```json
-{ "state": "playing" }
+{ "state": "listening" }
 ```
 
 ## Instance Configuration
@@ -170,24 +170,24 @@ BabelPod stores instance configuration in `babelpod.config.json` alongside the s
   "defaultInputId": "plughw:0,0",
   "defaultOutputIds": ["air:Kitchen"],
   "defaultVolume": 50,
-  "autoplayEnabled": true,
-  "autoplayThreshold": 0.002
+  "autoconnectEnabled": true,
+  "autoconnectThreshold": 0.01
 }
 ```
 
-## Autoplay
+## Autoconnect
 
-BabelPod can automatically detect audio on the input and route it to configured default speakers.
+BabelPod can automatically detect audio on the input and route it to configured default speakers. Uses RMS level monitoring with an exponential moving average to distinguish sustained music from transient surface noise.
 
 ### Server to Client
 
-**`autoplay`** — Sent when the autoplay state changes.
+**`autoconnect`** — Sent when the autoconnect state changes.
 
 ```json
 { "state": "idle" }
 ```
 
-Valid states: `"paused"`, `"idle"`, `"detecting"`, `"playing"`, `"silence"`
+Valid states: `"paused"`, `"idle"`, `"detecting"`, `"connected"`, `"silence"`
 
 **`rmsLevel`** — Sent at ~4Hz with the current input audio level (0.0-1.0 range).
 
@@ -197,23 +197,28 @@ Valid states: `"paused"`, `"idle"`, `"detecting"`, `"playing"`, `"silence"`
 
 ### State Machine
 
-- **paused** — Master kill switch. All outputs stopped. Autoplay won't trigger.
+- **paused** — Master kill switch. All outputs stopped. Autoconnect won't trigger.
 - **idle** — Armed and listening. Monitoring input RMS level. Outputs disconnected.
-- **detecting** — Signal above threshold detected, sustaining for 250ms to filter transient bumps.
-- **playing** — Audio routing active. Default outputs connected.
-- **silence** — Silence detected while playing. Outputs disconnect after 5 minutes of sustained silence.
+- **detecting** — Signal above threshold detected, sustaining for 250ms to filter transient bumps (e.g., table bumps). Uses raw RMS.
+- **connected** — Audio routing active. Default outputs connected. Uses smoothed RMS with hysteresis (threshold/4) to avoid flip-flopping during quiet passages.
+- **silence** — Silence detected while connected. Outputs disconnect after 5 minutes of sustained silence. Uses smoothed RMS.
 
-The `"playing"` client command enters `idle` (arms autoplay). The `"paused"` command stops everything immediately. On server restart, state is determined by `config.autoplayEnabled`.
+The `"listening"` client command enters `idle` (arms autoconnect). The `"paused"` command stops everything immediately. On server restart, state is determined by `config.autoconnectEnabled`.
+
+### Threshold Configuration
+
+- **Phono mode** (with preamp): threshold `0.01` — music at 0.03-0.08 smoothed, surface noise at 0.001-0.002 smoothed
+- **Line mode** (no preamp): threshold `0.0005` — much quieter signal
 
 ### Extended `state` Event
 
-The `state` event now includes two additional fields:
+The `state` event includes config and autoconnect state:
 
 ```json
 {
   ...existing fields...,
   "config": { ... },
-  "autoplayState": "idle"
+  "autoconnectState": "idle"
 }
 ```
 
