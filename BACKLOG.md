@@ -28,6 +28,15 @@ The Burr-Brown/TI USB Audio CODEC has no ALSA capture volume control — gain is
 - Add an input gain slider to the UI (web + SwiftUI)
 - Consider adding a signal level meter to the UI so users can visually confirm input levels
 
+## iOS App: Push Notification to Turn Off Record Player
+
+When autoconnect transitions from silence to idle (speakers released after 5 minutes of silence), send a push notification from the iOS app reminding the user to turn off the record player. The record is still spinning in the runout groove — the user may have walked away.
+
+Should be gated by a toggle in settings (off by default). Requires the server to emit the silence→idle transition event.
+
+- **iOS:** Register for push notifications, display alert when backgrounded
+- **Web:** Use the Web Notifications API (`Notification.requestPermission()` + `new Notification(...)`) — works even when the tab is in the background, no server-side push infrastructure needed
+
 ## iOS App: Unused ServicePickerView
 
 `BabelUI/ServicePickerView.swift` defines a service picker component that is not integrated into the app. Either integrate it into the connection flow or remove it to reduce dead code.

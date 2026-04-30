@@ -338,7 +338,7 @@
           </div>
           <div class="checkbox-list" id="settingsDefaultOutputs"></div>
 
-          <button class="save-button" onclick="saveSettings()">Save Settings</button>
+          <button class="save-button" id="saveSettingsButton" onclick="saveSettings()">Save Settings</button>
         </div>
       </details>
     </div>
@@ -610,6 +610,17 @@
         currentConfig = c;
         updateSettingsForm();
         updateServerName();
+
+        if (waitingForConfigConfirmation) {
+          waitingForConfigConfirmation = false;
+          if (saveConfirmationTimeout) clearTimeout(saveConfirmationTimeout);
+          const saveButton = document.getElementById("saveSettingsButton");
+          saveButton.textContent = "Saved ✓";
+          saveButton.disabled = false;
+          setTimeout(() => {
+            saveButton.textContent = "Save Settings";
+          }, 2000);
+        }
       });
       socket.on("autoconnect", (d) => {
         currentAutoconnectState = d.state;
@@ -756,6 +767,22 @@
         // Line mode: signal not amplified (~0.002 music), lower threshold
         const autoconnectThreshold = inputMode === "line" ? 0.0005 : 0.01;
 
+        const saveButton = document.getElementById("saveSettingsButton");
+        saveButton.textContent = "Saving...";
+        saveButton.disabled = true;
+        waitingForConfigConfirmation = true;
+
+        // Timeout if server doesn't respond
+        if (saveConfirmationTimeout) clearTimeout(saveConfirmationTimeout);
+        saveConfirmationTimeout = setTimeout(() => {
+          if (waitingForConfigConfirmation) {
+            waitingForConfigConfirmation = false;
+            saveButton.textContent = "Save failed";
+            saveButton.disabled = false;
+            setTimeout(() => { saveButton.textContent = "Save Settings"; }, 3000);
+          }
+        }, 5000);
+
         socket.emit("setConfig", {
           displayName: document.getElementById("settingsDisplayName").value,
           defaultInputId: document.getElementById("settingsDefaultInput").value,
@@ -765,6 +792,9 @@
           autoconnectThreshold: autoconnectThreshold
         });
       }
+
+      let waitingForConfigConfirmation = false;
+      let saveConfirmationTimeout = null;
 
       function onOutputCheckChange(e) {
         const cbs = outputsListDiv.querySelectorAll("input[type=checkbox]");
