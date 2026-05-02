@@ -26,9 +26,11 @@ Environment=LOG_LEVEL=debug
 # Start the Node 20 binary directly
 ExecStart=/usr/bin/node /home/pi/babelpod/index.js
 
-# Restart strategy: keep service alive
+# Restart strategy: keep service alive, rate-limited to prevent infinite loops
 Restart=always
 RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 # Audio performance tuning
 Nice=-5

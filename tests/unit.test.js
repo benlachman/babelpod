@@ -374,6 +374,125 @@ describe('Config Management', () => {
   });
 });
 
+describe('Input Process Management', () => {
+  // Models the generation counter pattern used in index.js.
+  // Each input spawn increments the generation; stale handlers are no-ops.
+  function createInputManager(maxAttempts = 5) {
+    let generation = 0;
+    let restartAttempts = 0;
+    let shouldExit = false;
+    const restartLog = [];
+
+    return {
+      get generation() { return generation; },
+      get restartAttempts() { return restartAttempts; },
+      get shouldExit() { return shouldExit; },
+      get restartLog() { return restartLog; },
+
+      startInput(devId) {
+        generation++;
+        restartAttempts = 0;
+        restartLog.push({ action: 'start', devId, generation });
+        return generation;
+      },
+
+      handleExit(exitGeneration, devId) {
+        if (exitGeneration !== generation) return 'stale';
+        restartLog.push({ action: 'exit', devId, generation: exitGeneration });
+        return this.scheduleRestart(devId, exitGeneration);
+      },
+
+      scheduleRestart(devId, restartGeneration) {
+        if (restartGeneration !== generation) return 'stale';
+        restartAttempts++;
+        if (restartAttempts > maxAttempts) {
+          shouldExit = true;
+          restartLog.push({ action: 'exhausted', devId });
+          return 'exhausted';
+        }
+        restartLog.push({ action: 'restart', devId, attempt: restartAttempts });
+        return 'restart';
+      },
+
+      watchdogRestart(devId) {
+        restartAttempts = 0;
+        generation++;
+        restartLog.push({ action: 'watchdog', devId, generation });
+        return generation;
+      }
+    };
+  }
+
+  test('stale exit handler is ignored when generation has advanced', () => {
+    const manager = createInputManager();
+    const gen1 = manager.startInput('plughw:0,0');
+    manager.startInput('plughw:1,0');
+    const result = manager.handleExit(gen1, 'plughw:0,0');
+    expect(result).toBe('stale');
+    expect(manager.restartAttempts).toBe(0);
+  });
+
+  test('current-generation exit handler triggers restart', () => {
+    const manager = createInputManager();
+    const gen = manager.startInput('plughw:0,0');
+    const result = manager.handleExit(gen, 'plughw:0,0');
+    expect(result).toBe('restart');
+    expect(manager.restartAttempts).toBe(1);
+  });
+
+  test('restart attempts exhaust and signal exit', () => {
+    const manager = createInputManager(3);
+    const gen = manager.startInput('plughw:0,0');
+    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
+    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
+    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
+    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('exhausted');
+    expect(manager.shouldExit).toBe(true);
+  });
+
+  test('manual input switch resets restart counter', () => {
+    const manager = createInputManager();
+    const gen1 = manager.startInput('plughw:0,0');
+    manager.scheduleRestart('plughw:0,0', gen1);
+    manager.scheduleRestart('plughw:0,0', gen1);
+    expect(manager.restartAttempts).toBe(2);
+
+    manager.startInput('plughw:1,0');
+    expect(manager.restartAttempts).toBe(0);
+  });
+
+  test('watchdog restart resets counter and advances generation', () => {
+    const manager = createInputManager();
+    const gen1 = manager.startInput('plughw:0,0');
+    manager.scheduleRestart('plughw:0,0', gen1);
+    manager.scheduleRestart('plughw:0,0', gen1);
+    expect(manager.restartAttempts).toBe(2);
+
+    const gen2 = manager.watchdogRestart('plughw:0,0');
+    expect(manager.restartAttempts).toBe(0);
+    expect(gen2).toBeGreaterThan(gen1);
+
+    const staleResult = manager.scheduleRestart('plughw:0,0', gen1);
+    expect(staleResult).toBe('stale');
+  });
+
+  test('clean exit (code 0) still triggers restart', () => {
+    const manager = createInputManager();
+    const gen = manager.startInput('plughw:0,0');
+    const result = manager.handleExit(gen, 'plughw:0,0');
+    expect(result).toBe('restart');
+  });
+
+  test('pending restart becomes no-op after manual switch', () => {
+    const manager = createInputManager();
+    const gen1 = manager.startInput('plughw:0,0');
+    manager.startInput('plughw:1,0');
+    const result = manager.scheduleRestart('plughw:0,0', gen1);
+    expect(result).toBe('stale');
+    expect(manager.restartAttempts).toBe(0);
+  });
+});
+
 // Note: Full integration tests would require:
 // 1. Mock ALSA devices
 // 2. Mock AirPlay receivers

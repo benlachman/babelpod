@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const stream = require('stream');
 const util = require('util');
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
@@ -200,11 +200,12 @@ setInterval(() => {
       }
     }
 
-    // Suppress exit handler auto-restart — the watchdog is handling recovery
-    isManualInputSwitch = true;
     inputRestartAttempts = 0;
-    lastInputDataTime = Date.now(); // Prevent re-firing while restart is in progress
-    restartInputDevice(currentInput, 0);
+    lastInputDataTime = Date.now();
+    cleanupCurrentInput();
+    setTimeout(() => {
+      startArecordForDevice(currentInput, true);
+    }, CLEANUP_DELAY);
   }
 }, INPUT_WATCHDOG_INTERVAL_MS);
 
@@ -348,7 +349,7 @@ function tickAutoconnect(rawRms) {
         }
       } else if (now - autoconnectState.silenceSince >= AUTOCONNECT_SILENCE_TIMEOUT_MS) {
         const silentFor = now - autoconnectState.silenceSince;
-        logStateTransition('silence', 'idle', rmsLevel, `silent for ${Math.round(silentFor/1000)}s`);
+        logStateTransition('silence', 'idle', smoothedRms, `silent for ${Math.round(silentFor/1000)}s`);
         autoconnectState.state = 'idle';
         autoconnectState.silenceSince = null;
         emitAutoconnectState();
@@ -403,14 +404,11 @@ duplicator.on('error', e => {
 // =======================
 let currentInput = "void";
 let arecordInstance = null;
-let isManualInputSwitch = false; // Track if input switch was intentional
+let inputGeneration = 0;
 let inputRestartAttempts = 0;
-const MAX_INPUT_RESTART_ATTEMPTS = 3;
-const INPUT_RESTART_DELAY = 2000; // 2 seconds
-const CLEANUP_DELAY = 500; // Delay after cleanup before starting new process
-let busyRetryAttempts = 0;
-const MAX_BUSY_RETRY_ATTEMPTS = 5;
-const BUSY_RETRY_BASE_DELAY = 200; // Base delay for busy retry (exponential backoff)
+const MAX_INPUT_RESTART_ATTEMPTS = 5;
+const INPUT_RESTART_DELAY = 2000;
+const CLEANUP_DELAY = 500;
 
 util.inherits(FromVoid, stream.Readable);
 function FromVoid() {
@@ -429,13 +427,17 @@ function cleanupCurrentInput() {
       inputStream.unpipe(rmsMonitor);
       inputStream = null;
     }
+    if (rmsMonitor) {
+      rmsMonitor.unpipe(duplicator);
+      rmsMonitor.removeAllListeners('rms');
+    }
     if (arecordInstance) {
       try {
         arecordInstance.kill('SIGTERM');
         const instance = arecordInstance;
         setTimeout(() => {
           if (instance && !instance.killed) {
-            console.log('arecord did not terminate gracefully, force killing...');
+            log.warn('arecord did not terminate gracefully, force killing...');
             instance.kill('SIGKILL');
           }
         }, 100);
@@ -449,41 +451,19 @@ function cleanupCurrentInput() {
   }
 }
 
-// Kill any orphaned arecord processes for the specified device
-function killOrphanedArecord(devId) {
-  if (devId === "void" || !devId) return;
-  // Get the pid of our current arecord so we don't kill it
-  const currentPid = arecordInstance ? arecordInstance.pid : null;
-  try {
-    const result = execSync(`pgrep -f "arecord.*${devId}"`, { encoding: 'utf8' }).trim();
-    if (result) {
-      const pids = result.split('\n').filter(pid => pid && Number(pid) !== currentPid);
-      if (pids.length > 0) {
-        log.info(`Found orphaned arecord processes for ${devId}: ${pids.join(', ')}`);
-        for (const pid of pids) {
-          try { process.kill(Number(pid), 'SIGKILL'); } catch (e) { /* already gone */ }
-        }
-      }
-    }
-  } catch (e) {
-    if (e.status !== 1) {
-      log.error(`Error checking for orphaned arecord processes: ${e.message}`);
-    }
-  }
-}
-
-// Start arecord for a specific device with orphan cleanup
+// Start arecord for a specific device
 function startArecordForDevice(devId, isRetry = false) {
   if (devId === "void") return;
+
+  const generation = ++inputGeneration;
+
   try {
-    console.log(`Starting arecord for device: ${devId}${isRetry ? ' (retry)' : ''}`);
-    killOrphanedArecord(devId);
+    console.log(`Starting arecord for device: ${devId}${isRetry ? ` (retry ${inputRestartAttempts}/${MAX_INPUT_RESTART_ATTEMPTS})` : ''}`);
 
     arecordInstance = spawn("arecord", [
       "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100"
     ]);
 
-    setupArecordHandlers(devId, isRetry);
     inputStream = arecordInstance.stdout;
     inputStream.on('error', (error) => {
       console.error(`Error with input stream for ${devId}:`, error);
@@ -493,84 +473,63 @@ function startArecordForDevice(devId, isRetry = false) {
     rmsMonitor.pipe(duplicator);
     inputStream.pipe(rmsMonitor);
 
-    busyRetryAttempts = 0;
-    if (isRetry) {
-      // Delay resetting the manual switch flag so the old process's
-      // exit handler doesn't trigger a cascading restart
-      setTimeout(() => { isManualInputSwitch = false; }, 1000);
-    }
+    setupArecordHandlers(devId, generation);
+
     io.emit('input', { id: currentInput });
     io.emit('status', { message: `Input ${isRetry ? 'reconnected' : 'switched'} to ${currentInput}` });
     console.log(`Successfully started arecord for device: ${devId}`);
-    startStabilityTimer();
   } catch (e) {
     console.error(`Failed to start arecord for device ${devId}:`, e);
     io.emit('serverError', { message: `Failed to start input: ${e.message}` });
   }
 }
 
-// Reset restart counter after 5 minutes of stable operation
-const INPUT_STABLE_RESET_MS = 300000;
-let inputStableTimer = null;
-
-function startStabilityTimer() {
-  if (inputStableTimer) clearTimeout(inputStableTimer);
-  inputStableTimer = setTimeout(() => {
-    if (inputRestartAttempts > 0) {
-      log.info(`[watchdog] Input stable for 5 minutes — resetting restart counter from ${inputRestartAttempts}`);
-      inputRestartAttempts = 0;
-    }
-  }, INPUT_STABLE_RESET_MS);
-}
-
-// Restart input device (for automatic recovery)
-function restartInputDevice(devId, delayMs = 0) {
+// Unified input restart with exponential backoff and systemd escalation.
+// Generation-checked at every async boundary — becomes a no-op if a new
+// input session has started (manual switch, watchdog, etc.).
+function scheduleInputRestart(devId, generation) {
   if (devId === "void") return;
+  if (generation !== inputGeneration) return;
+
+  inputRestartAttempts++;
+
+  if (inputRestartAttempts > MAX_INPUT_RESTART_ATTEMPTS) {
+    log.error(`Restart attempts exhausted for ${devId} — exiting for systemd restart`);
+    io.emit('serverError', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} attempts. Service will restart.` });
+    process.exit(1);
+  }
+
+  const delay = INPUT_RESTART_DELAY * Math.pow(1.5, inputRestartAttempts - 1);
+  log.info(`Scheduling input restart for ${devId} in ${Math.round(delay)}ms (attempt ${inputRestartAttempts}/${MAX_INPUT_RESTART_ATTEMPTS})`);
 
   setTimeout(() => {
-    console.log(`Attempting to restart input device: ${devId} (attempt ${inputRestartAttempts + 1}/${MAX_INPUT_RESTART_ATTEMPTS})`);
-    try {
-      cleanupCurrentInput();
-      setTimeout(() => {
-        startArecordForDevice(devId, true);
-        inputRestartAttempts++;
-      }, CLEANUP_DELAY);
-    } catch (e) {
-      console.error(`Failed to restart input device ${devId}:`, e);
-      io.emit('serverError', { message: `Failed to reconnect input: ${e.message}` });
-    }
-  }, delayMs);
+    if (generation !== inputGeneration) return;
+    cleanupCurrentInput();
+    setTimeout(() => {
+      if (generation !== inputGeneration) return;
+      startArecordForDevice(devId, true);
+    }, CLEANUP_DELAY);
+  }, delay);
 }
 
-// Setup arecord process event handlers
-function setupArecordHandlers(devId, isRetry = false) {
+// Setup arecord process event handlers — tagged with generation so stale handlers are no-ops
+function setupArecordHandlers(devId, generation) {
   if (!arecordInstance) return;
 
   arecordInstance.on('error', (error) => {
+    if (generation !== inputGeneration) return;
     console.error(`Error with arecord process for ${devId}:`, error);
     io.emit('serverError', { message: `Input device error: ${error.message}` });
   });
 
   arecordInstance.stderr.on('data', (data) => {
+    if (generation !== inputGeneration) return;
     const msg = data.toString();
     console.error(`arecord stderr for ${devId}:`, msg);
 
-    // Handle "Device or resource busy" with retry
     if (msg.includes('Device or resource busy') || msg.includes('audio open error')) {
-      console.log(`Device busy detected for ${devId}, will retry after cleanup`);
-      if (busyRetryAttempts < MAX_BUSY_RETRY_ATTEMPTS) {
-        busyRetryAttempts++;
-        const delay = BUSY_RETRY_BASE_DELAY * Math.pow(2, busyRetryAttempts - 1);
-        console.log(`Busy retry ${busyRetryAttempts}/${MAX_BUSY_RETRY_ATTEMPTS} in ${delay}ms`);
-        cleanupCurrentInput();
-        setTimeout(() => {
-          startArecordForDevice(devId, true);
-        }, delay);
-      } else {
-        console.error(`Max busy retries reached for ${devId}`);
-        io.emit('serverError', { message: `Input device busy after ${MAX_BUSY_RETRY_ATTEMPTS} retries` });
-        busyRetryAttempts = 0;
-      }
+      log.warn(`Device busy for ${devId}, scheduling retry`);
+      scheduleInputRestart(devId, generation);
       return;
     }
 
@@ -578,34 +537,23 @@ function setupArecordHandlers(devId, isRetry = false) {
       io.emit('serverError', { message: `Input error: ${msg.substring(0, 100)}` });
     }
   });
-  
+
   arecordInstance.on('exit', (code, signal) => {
-    console.log(`arecord exited for ${devId} - code: ${code}, signal: ${signal}, manual: ${isManualInputSwitch}`);
-    
-    // Only attempt restart if:
-    // 1. Exit was unexpected (non-zero code or killed by signal)
-    // 2. It wasn't a manual input switch
-    // 3. We haven't exceeded retry attempts
-    // 4. The current input is still this device
-    if (!isManualInputSwitch && currentInput === devId) {
-      if (code !== 0 || signal) {
-        console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
-        io.emit('serverError', { message: `Input device disconnected - attempting to reconnect...` });
-        
-        if (inputRestartAttempts < MAX_INPUT_RESTART_ATTEMPTS) {
-          restartInputDevice(devId, INPUT_RESTART_DELAY);
-        } else {
-          console.error(`Max restart attempts (${MAX_INPUT_RESTART_ATTEMPTS}) reached for ${devId}`);
-          io.emit('serverError', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} reconnection attempts. Please reselect the input.` });
-          inputRestartAttempts = 0; // Reset for next manual selection
-        }
-      }
+    if (generation !== inputGeneration) {
+      log.debug(`Ignoring stale exit handler for ${devId} (generation ${generation}, current ${inputGeneration})`);
+      return;
     }
-    
-    // Reset flag after handling exit
-    if (isManualInputSwitch) {
-      isManualInputSwitch = false;
+    console.log(`arecord exited for ${devId} - code: ${code}, signal: ${signal}`);
+
+    if (currentInput !== devId) return;
+
+    if (code !== 0 || signal) {
+      console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
+      io.emit('serverError', { message: `Input device disconnected - attempting to reconnect...` });
+    } else {
+      log.warn(`arecord exited cleanly (code 0) for ${devId} — restarting`);
     }
+    scheduleInputRestart(devId, generation);
   });
 }
 
@@ -741,22 +689,10 @@ if (!process.env.DISABLE_PCM) {
     const configuredInput = config.defaultInputId && availablePcmInputs.some(d => d.id === config.defaultInputId)
       ? config.defaultInputId
       : availablePcmInputs[0].id;
-    const autoDevId = configuredInput;
-    console.log("Auto-selecting input:", autoDevId);
+    console.log("Auto-selecting input:", configuredInput);
     cleanupCurrentInput();
-    currentInput = autoDevId;
-    arecordInstance = spawn("arecord", [
-      "-D", autoDevId, "-c", "2", "-f", "S16_LE", "-r", "44100"
-    ]);
-    setupArecordHandlers(autoDevId);
-    inputStream = arecordInstance.stdout;
-    inputStream.on('error', (error) => {
-      console.error(`Error with auto-selected input stream for ${autoDevId}:`, error);
-    });
-    rmsMonitor = new RmsMonitorTransform();
-    wireRmsMonitor();
-    rmsMonitor.pipe(duplicator);
-    inputStream.pipe(rmsMonitor);
+    currentInput = configuredInput;
+    startArecordForDevice(configuredInput, false);
   }
   setInterval(scanPcmDevices, 10000);
 } else {
@@ -1103,17 +1039,14 @@ io.on('connection', socket => {
     console.log("Switching input to:", devId);
 
     if (socket.id !== sessionOwner) return;
-    
-    try {
-      // Mark this as a manual switch to prevent auto-restart
-      isManualInputSwitch = true;
-      inputRestartAttempts = 0;
-      busyRetryAttempts = 0;
 
+    try {
+      inputRestartAttempts = 0;
       cleanupCurrentInput();
       currentInput = devId;
 
       if (devId === "void") {
+        inputGeneration++;
         inputStream = new FromVoid();
         rmsMonitor = new RmsMonitorTransform();
         wireRmsMonitor();
@@ -1121,7 +1054,6 @@ io.on('connection', socket => {
         inputStream.pipe(rmsMonitor);
         io.emit('input', { id: currentInput });
         io.emit('status', { message: `Input switched to ${currentInput}` });
-        isManualInputSwitch = false;
       } else if (devId.includes('bluealsa') && blue) {
         const btDevice = availableBluetoothInputs.find(d => d.id === devId);
         if (btDevice && !btDevice.connected) {
@@ -1140,7 +1072,6 @@ io.on('connection', socket => {
           } catch (e) {
             console.error("Error connecting to Bluetooth device:", e);
             io.emit('serverError', { message: `Failed to connect to Bluetooth: ${e.message}` });
-            isManualInputSwitch = false;
           }
         } else {
           setTimeout(() => {
@@ -1152,7 +1083,7 @@ io.on('connection', socket => {
           startArecordForDevice(devId, false);
         }, CLEANUP_DELAY);
       }
-      
+
     } catch (e) {
       console.error("Error switching input:", e);
       io.emit('serverError', { message: `Failed to switch input: ${e.message}` });
@@ -1260,8 +1191,10 @@ server.listen(PORT, () => {
 // =======================
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
-  io.emit('serverError', { message: 'Server encountered an unexpected error' });
-  // Don't exit - try to recover
+  try {
+    io.emit('serverError', { message: 'Server encountered an unexpected error — restarting' });
+  } catch (e) { /* socket may be dead */ }
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
