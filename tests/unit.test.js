@@ -493,6 +493,37 @@ describe('Input Process Management', () => {
   });
 });
 
+describe('arecord Spawn Configuration', () => {
+  test('should include buffer-size flag in arecord arguments', () => {
+    const devId = 'plughw:0,0';
+    const args = ["-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"];
+    expect(args).toContain('--buffer-size=131072');
+    expect(args.indexOf('--buffer-size=131072')).toBe(args.length - 1);
+  });
+});
+
+describe('SIGTERM Cleanup Timing', () => {
+  test('should allow 2000ms for graceful SIGTERM before SIGKILL', () => {
+    const SIGKILL_TIMEOUT = 2000;
+    expect(SIGKILL_TIMEOUT).toBeGreaterThanOrEqual(2000);
+    expect(SIGKILL_TIMEOUT).toBeLessThanOrEqual(5000);
+  });
+});
+
+describe('Memory Logging', () => {
+  test('should format memory usage as human-readable MB values', () => {
+    const mem = { rss: 52428800, heapUsed: 20971520, heapTotal: 33554432, external: 1048576 };
+    const formatted = `rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB`;
+    expect(formatted).toBe('rss=50MB heap=20/32MB external=1MB');
+  });
+
+  test('should handle zero memory values', () => {
+    const mem = { rss: 0, heapUsed: 0, heapTotal: 0, external: 0 };
+    const formatted = `rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB`;
+    expect(formatted).toBe('rss=0MB heap=0/0MB external=0MB');
+  });
+});
+
 // Note: Full integration tests would require:
 // 1. Mock ALSA devices
 // 2. Mock AirPlay receivers

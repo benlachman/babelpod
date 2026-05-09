@@ -24,7 +24,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=LOG_LEVEL=debug
 
 # Start the Node 20 binary directly
-ExecStart=/usr/bin/node /home/pi/babelpod/index.js
+ExecStart=/usr/bin/node --max-old-space-size=128 /home/pi/babelpod/index.js
 
 # Restart strategy: keep service alive, rate-limited to prevent infinite loops
 Restart=always

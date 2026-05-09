@@ -264,6 +264,11 @@ let lastRmsLogTime = 0;
 let maxRmsSinceLastLog = 0;
 const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
 
+setInterval(() => {
+  const mem = process.memoryUsage();
+  log.debug(`[memory] rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB`);
+}, 300000);
+
 // Smoothed RMS via exponential moving average — distinguishes sustained
 // music from transient spikes like surface noise pops.
 // alpha=0.15 with ~10 samples/sec ≈ 1s time constant.
@@ -440,7 +445,7 @@ function cleanupCurrentInput() {
             log.warn('arecord did not terminate gracefully, force killing...');
             instance.kill('SIGKILL');
           }
-        }, 100);
+        }, 2000);
       } catch (e) {
         console.error("Error killing arecord instance:", e);
       }
@@ -461,7 +466,7 @@ function startArecordForDevice(devId, isRetry = false) {
     console.log(`Starting arecord for device: ${devId}${isRetry ? ` (retry ${inputRestartAttempts}/${MAX_INPUT_RESTART_ATTEMPTS})` : ''}`);
 
     arecordInstance = spawn("arecord", [
-      "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100"
+      "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"
     ]);
 
     inputStream = arecordInstance.stdout;
