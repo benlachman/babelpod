@@ -3,6 +3,8 @@
 Description=Babelpod audio streaming service
 Wants=network-online.target avahi-daemon.service bluetooth.target
 After=network-online.target avahi-daemon.service bluetooth.target sound.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -29,8 +31,6 @@ ExecStart=/usr/bin/node --max-old-space-size=128 /home/pi/babelpod/index.js
 # Restart strategy: keep service alive, rate-limited to prevent infinite loops
 Restart=always
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=300
 
 # Audio performance tuning
 Nice=-5
