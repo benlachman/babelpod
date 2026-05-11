@@ -601,8 +601,7 @@ function setupArecordHandlers(devId, generation) {
     console.error(`arecord stderr for ${devId}:`, msg);
 
     if (msg.includes('Device or resource busy') || msg.includes('audio open error')) {
-      log.warn(`Device busy for ${devId}, scheduling retry`);
-      scheduleInputRestart(devId, generation);
+      log.warn(`Device busy for ${devId} — exit handler will schedule retry`);
       return;
     }
 
