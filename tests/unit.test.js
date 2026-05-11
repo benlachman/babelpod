@@ -379,7 +379,7 @@ describe('Input Process Management', () => {
   // Each input spawn increments the generation; stale handlers are no-ops.
   const USB_RESET_ATTEMPT = 3;
 
-  function createInputManager(maxAttempts = 5) {
+  function createInputManager(maxAttempts = 3) {
     let generation = 0;
     let restartAttempts = 0;
     let shouldExit = false;
@@ -513,8 +513,6 @@ describe('Input Process Management', () => {
     manager.scheduleRestart('plughw:0,0', gen); // 1
     manager.scheduleRestart('plughw:0,0', gen); // 2
     manager.scheduleRestart('plughw:0,0', gen); // 3 — usb-reset
-    manager.scheduleRestart('plughw:0,0', gen); // 4
-    manager.scheduleRestart('plughw:0,0', gen); // 5
     expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('exhausted');
     expect(manager.shouldExit).toBe(true);
   });
