@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const stream = require('stream');
 const util = require('util');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
@@ -489,6 +489,45 @@ function startArecordForDevice(devId, isRetry = false) {
   }
 }
 
+function resetUsbAudioDevice() {
+  try {
+    const devicePath = execSync('readlink -f /sys/class/sound/card0/device', { encoding: 'utf8' }).trim();
+    const usbDevice = devicePath.split('/').find(segment => /^\d+-\d+$/.test(segment));
+    if (!usbDevice) {
+      log.error('[recovery] Could not determine USB device ID from path:', devicePath);
+      return false;
+    }
+    log.warn(`[recovery] Resetting USB device ${usbDevice}`);
+    execSync(`echo "${usbDevice}" | sudo /usr/bin/tee /sys/bus/usb/drivers/usb/unbind`, { encoding: 'utf8' });
+    return true;
+  } catch (error) {
+    log.error(`[recovery] USB unbind failed: ${error.message}`);
+    return false;
+  }
+}
+
+function rebindUsbAudioDevice() {
+  try {
+    const devicePath = execSync('readlink -f /sys/class/sound/card0/device', { encoding: 'utf8', timeout: 2000 }).trim();
+    const usbDevice = devicePath.split('/').find(segment => /^\d+-\d+$/.test(segment));
+    if (usbDevice) {
+      execSync(`echo "${usbDevice}" | sudo /usr/bin/tee /sys/bus/usb/drivers/usb/bind`, { encoding: 'utf8' });
+      log.info(`[recovery] USB device ${usbDevice} re-bound`);
+      return;
+    }
+  } catch (_) { /* card0 may not exist yet after unbind */ }
+
+  try {
+    execSync('echo "1-1" | sudo /usr/bin/tee /sys/bus/usb/drivers/usb/bind', { encoding: 'utf8' });
+    log.info('[recovery] USB device 1-1 re-bound (fallback)');
+  } catch (error) {
+    log.error(`[recovery] USB rebind failed: ${error.message}`);
+  }
+}
+
+const USB_RESET_ATTEMPT = 3;
+const USB_REBIND_DELAY = 2000;
+
 // Unified input restart with exponential backoff and systemd escalation.
 // Generation-checked at every async boundary — becomes a no-op if a new
 // input session has started (manual switch, watchdog, etc.).
@@ -502,6 +541,23 @@ function scheduleInputRestart(devId, generation) {
     log.error(`Restart attempts exhausted for ${devId} — exiting for systemd restart`);
     io.emit('serverError', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} attempts. Service will restart.` });
     process.exit(1);
+  }
+
+  if (inputRestartAttempts === USB_RESET_ATTEMPT) {
+    log.warn('[recovery] Attempting USB device reset before retry');
+    cleanupCurrentInput();
+    const unbound = resetUsbAudioDevice();
+    if (unbound) {
+      setTimeout(() => {
+        if (generation !== inputGeneration) return;
+        rebindUsbAudioDevice();
+        setTimeout(() => {
+          if (generation !== inputGeneration) return;
+          startArecordForDevice(devId, true);
+        }, CLEANUP_DELAY);
+      }, USB_REBIND_DELAY);
+      return;
+    }
   }
 
   const delay = INPUT_RESTART_DELAY * Math.pow(1.5, inputRestartAttempts - 1);
