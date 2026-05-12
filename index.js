@@ -446,7 +446,7 @@ function startArecordForDevice(devId, isRetry = false) {
     console.log(`Starting arecord for device: ${devId}${isRetry ? ' (retry)' : ''}`);
 
     arecordInstance = spawn("arecord", [
-      "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"
+      "-D", devId, "-t", "raw", "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"
     ]);
 
     inputStream = arecordInstance.stdout;
