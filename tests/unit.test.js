@@ -377,54 +377,20 @@ describe('Config Management', () => {
 describe('Input Process Management', () => {
   // Models the generation counter pattern used in index.js.
   // Each input spawn increments the generation; stale handlers are no-ops.
-  const USB_RESET_ATTEMPT = 3;
-
-  function createInputManager(maxAttempts = 3) {
+  function createInputManager() {
     let generation = 0;
-    let restartAttempts = 0;
-    let shouldExit = false;
-    const restartLog = [];
 
     return {
       get generation() { return generation; },
-      get restartAttempts() { return restartAttempts; },
-      get shouldExit() { return shouldExit; },
-      get restartLog() { return restartLog; },
 
       startInput(devId) {
         generation++;
-        restartAttempts = 0;
-        restartLog.push({ action: 'start', devId, generation });
         return generation;
       },
 
-      handleExit(exitGeneration, devId) {
+      handleExit(exitGeneration) {
         if (exitGeneration !== generation) return 'stale';
-        restartLog.push({ action: 'exit', devId, generation: exitGeneration });
-        return this.scheduleRestart(devId, exitGeneration);
-      },
-
-      scheduleRestart(devId, restartGeneration) {
-        if (restartGeneration !== generation) return 'stale';
-        restartAttempts++;
-        if (restartAttempts > maxAttempts) {
-          shouldExit = true;
-          restartLog.push({ action: 'exhausted', devId });
-          return 'exhausted';
-        }
-        if (restartAttempts === USB_RESET_ATTEMPT) {
-          restartLog.push({ action: 'usb-reset', devId, attempt: restartAttempts });
-          return 'usb-reset';
-        }
-        restartLog.push({ action: 'restart', devId, attempt: restartAttempts });
-        return 'restart';
-      },
-
-      watchdogRestart(devId) {
-        restartAttempts = 0;
-        generation++;
-        restartLog.push({ action: 'watchdog', devId, generation });
-        return generation;
+        return 'exit';
       }
     };
   }
@@ -433,100 +399,21 @@ describe('Input Process Management', () => {
     const manager = createInputManager();
     const gen1 = manager.startInput('plughw:0,0');
     manager.startInput('plughw:1,0');
-    const result = manager.handleExit(gen1, 'plughw:0,0');
-    expect(result).toBe('stale');
-    expect(manager.restartAttempts).toBe(0);
+    expect(manager.handleExit(gen1)).toBe('stale');
   });
 
-  test('current-generation exit handler triggers restart', () => {
+  test('current-generation exit triggers process exit', () => {
     const manager = createInputManager();
     const gen = manager.startInput('plughw:0,0');
-    const result = manager.handleExit(gen, 'plughw:0,0');
-    expect(result).toBe('restart');
-    expect(manager.restartAttempts).toBe(1);
+    expect(manager.handleExit(gen)).toBe('exit');
   });
 
-  test('restart attempts exhaust and signal exit', () => {
-    const manager = createInputManager(3);
-    const gen = manager.startInput('plughw:0,0');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('usb-reset');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('exhausted');
-    expect(manager.shouldExit).toBe(true);
-  });
-
-  test('manual input switch resets restart counter', () => {
+  test('manual input switch advances generation', () => {
     const manager = createInputManager();
     const gen1 = manager.startInput('plughw:0,0');
-    manager.scheduleRestart('plughw:0,0', gen1);
-    manager.scheduleRestart('plughw:0,0', gen1);
-    expect(manager.restartAttempts).toBe(2);
-
-    manager.startInput('plughw:1,0');
-    expect(manager.restartAttempts).toBe(0);
-  });
-
-  test('watchdog restart resets counter and advances generation', () => {
-    const manager = createInputManager();
-    const gen1 = manager.startInput('plughw:0,0');
-    manager.scheduleRestart('plughw:0,0', gen1);
-    manager.scheduleRestart('plughw:0,0', gen1);
-    expect(manager.restartAttempts).toBe(2);
-
-    const gen2 = manager.watchdogRestart('plughw:0,0');
-    expect(manager.restartAttempts).toBe(0);
+    const gen2 = manager.startInput('plughw:1,0');
     expect(gen2).toBeGreaterThan(gen1);
-
-    const staleResult = manager.scheduleRestart('plughw:0,0', gen1);
-    expect(staleResult).toBe('stale');
-  });
-
-  test('clean exit (code 0) still triggers restart', () => {
-    const manager = createInputManager();
-    const gen = manager.startInput('plughw:0,0');
-    const result = manager.handleExit(gen, 'plughw:0,0');
-    expect(result).toBe('restart');
-  });
-
-  test('pending restart becomes no-op after manual switch', () => {
-    const manager = createInputManager();
-    const gen1 = manager.startInput('plughw:0,0');
-    manager.startInput('plughw:1,0');
-    const result = manager.scheduleRestart('plughw:0,0', gen1);
-    expect(result).toBe('stale');
-    expect(manager.restartAttempts).toBe(0);
-  });
-
-  test('USB reset triggers on attempt 3', () => {
-    const manager = createInputManager();
-    const gen = manager.startInput('plughw:0,0');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('restart');
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('usb-reset');
-    expect(manager.restartLog).toContainEqual({ action: 'usb-reset', devId: 'plughw:0,0', attempt: 3 });
-  });
-
-  test('USB reset does not prevent exhaustion if retries continue failing', () => {
-    const manager = createInputManager();
-    const gen = manager.startInput('plughw:0,0');
-    manager.scheduleRestart('plughw:0,0', gen); // 1
-    manager.scheduleRestart('plughw:0,0', gen); // 2
-    manager.scheduleRestart('plughw:0,0', gen); // 3 — usb-reset
-    expect(manager.scheduleRestart('plughw:0,0', gen)).toBe('exhausted');
-    expect(manager.shouldExit).toBe(true);
-  });
-
-  test('USB device ID parsing from sysfs path', () => {
-    const devicePath = '/sys/devices/platform/soc/3f980000.usb/usb1/1-1/1-1:1.0';
-    const usbDevice = devicePath.split('/').find(segment => /^\d+-\d+$/.test(segment));
-    expect(usbDevice).toBe('1-1');
-  });
-
-  test('USB device ID parsing handles multi-level paths', () => {
-    const devicePath = '/sys/devices/platform/soc/3f980000.usb/usb1/1-1/1-1.2/1-1.2:1.0';
-    const usbDevice = devicePath.split('/').find(segment => /^\d+-\d+$/.test(segment));
-    expect(usbDevice).toBe('1-1');
+    expect(manager.handleExit(gen1)).toBe('stale');
   });
 });
 

@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const stream = require('stream');
 const util = require('util');
-const { spawn, execSync, exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const mdns = require('mdns-js');
 const dnssd = require('dnssd2');
@@ -186,26 +186,9 @@ setInterval(() => {
 
   const silentDuration = Date.now() - lastInputDataTime;
   if (silentDuration > INPUT_WATCHDOG_TIMEOUT_MS) {
-    log.warn(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — restarting input ${currentInput}`);
-
-    // Disconnect outputs first to prevent clicking on speakers during restart
-    if (selectedOutputs.length > 0) {
-      log.info('[watchdog] Disconnecting outputs before input restart');
-      syncOutputs([]);
-      io.emit('output', { ids: [] });
-      if (autoconnectState.state !== 'paused') {
-        autoconnectState.state = 'idle';
-        autoconnectState.silenceSince = null;
-        emitAutoconnectState();
-      }
-    }
-
-    inputRestartAttempts = 0;
-    lastInputDataTime = Date.now();
-    cleanupCurrentInput();
-    setTimeout(() => {
-      startArecordForDevice(currentInput, true);
-    }, CLEANUP_DELAY);
+    log.error(`[watchdog] No input data for ${Math.round(silentDuration/1000)}s — exiting for systemd restart`);
+    io.emit('serverError', { message: 'Input device stalled — service will restart' });
+    process.exit(1);
   }
 }, INPUT_WATCHDOG_INTERVAL_MS);
 
@@ -410,9 +393,6 @@ duplicator.on('error', e => {
 let currentInput = "void";
 let arecordInstance = null;
 let inputGeneration = 0;
-let inputRestartAttempts = 0;
-const MAX_INPUT_RESTART_ATTEMPTS = 3;
-const INPUT_RESTART_DELAY = 1000;
 const CLEANUP_DELAY = 500;
 
 util.inherits(FromVoid, stream.Readable);
@@ -463,7 +443,7 @@ function startArecordForDevice(devId, isRetry = false) {
   const generation = ++inputGeneration;
 
   try {
-    console.log(`Starting arecord for device: ${devId}${isRetry ? ` (retry ${inputRestartAttempts}/${MAX_INPUT_RESTART_ATTEMPTS})` : ''}`);
+    console.log(`Starting arecord for device: ${devId}${isRetry ? ' (retry)' : ''}`);
 
     arecordInstance = spawn("arecord", [
       "-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"
@@ -489,100 +469,10 @@ function startArecordForDevice(devId, isRetry = false) {
   }
 }
 
-function getUsbDeviceId(callback) {
-  exec('readlink -f /sys/class/sound/card0/device', { encoding: 'utf8', timeout: 2000 }, (error, stdout) => {
-    if (error) {
-      callback(null);
-      return;
-    }
-    const usbDevice = stdout.trim().split('/').find(segment => /^\d+-\d+$/.test(segment));
-    callback(usbDevice || null);
-  });
-}
-
-function resetUsbAudioDevice(callback) {
-  getUsbDeviceId((usbDevice) => {
-    if (!usbDevice) {
-      log.error('[recovery] Could not determine USB device ID');
-      callback(false);
-      return;
-    }
-    log.warn(`[recovery] Unbinding USB device ${usbDevice}`);
-    exec(`echo "${usbDevice}" | sudo /usr/bin/tee /sys/bus/usb/drivers/usb/unbind`, { encoding: 'utf8', timeout: 5000 }, (error) => {
-      if (error) {
-        log.error(`[recovery] USB unbind failed: ${error.message}`);
-        callback(false);
-        return;
-      }
-      callback(true, usbDevice);
-    });
-  });
-}
-
-function rebindUsbAudioDevice(unboundDevice, callback) {
-  const deviceId = unboundDevice || '1-1';
-  log.info(`[recovery] Rebinding USB device ${deviceId}`);
-  exec(`echo "${deviceId}" | sudo /usr/bin/tee /sys/bus/usb/drivers/usb/bind`, { encoding: 'utf8', timeout: 5000 }, (error) => {
-    if (error) {
-      log.error(`[recovery] USB rebind failed: ${error.message}`);
-    } else {
-      log.info(`[recovery] USB device ${deviceId} re-bound`);
-    }
-    callback();
-  });
-}
-
-const USB_RESET_ATTEMPT = 3;
-const USB_REBIND_DELAY = 2000;
-
-// Unified input restart with fixed delay and USB reset on final attempt.
-// Generation-checked at every async boundary — becomes a no-op if a new
-// input session has started (manual switch, watchdog, etc.).
-function scheduleInputRestart(devId, generation) {
-  if (devId === "void") return;
-  if (generation !== inputGeneration) return;
-
-  inputRestartAttempts++;
-
-  if (inputRestartAttempts > MAX_INPUT_RESTART_ATTEMPTS) {
-    log.error(`Restart attempts exhausted for ${devId} — exiting for systemd restart`);
-    io.emit('serverError', { message: `Input device failed after ${MAX_INPUT_RESTART_ATTEMPTS} attempts. Service will restart.` });
-    process.exit(1);
-  }
-
-  if (inputRestartAttempts === USB_RESET_ATTEMPT) {
-    log.warn('[recovery] Attempting USB device reset before retry');
-    cleanupCurrentInput();
-    resetUsbAudioDevice((unbound, usbDevice) => {
-      if (generation !== inputGeneration) return;
-      if (unbound) {
-        setTimeout(() => {
-          if (generation !== inputGeneration) return;
-          rebindUsbAudioDevice(usbDevice, () => {
-            if (generation !== inputGeneration) return;
-            setTimeout(() => {
-              if (generation !== inputGeneration) return;
-              startArecordForDevice(devId, true);
-            }, CLEANUP_DELAY);
-          });
-        }, USB_REBIND_DELAY);
-      } else {
-        startArecordForDevice(devId, true);
-      }
-    });
-    return;
-  }
-
-  log.info(`Scheduling input restart for ${devId} in ${INPUT_RESTART_DELAY}ms (attempt ${inputRestartAttempts}/${MAX_INPUT_RESTART_ATTEMPTS})`);
-
-  setTimeout(() => {
-    if (generation !== inputGeneration) return;
-    cleanupCurrentInput();
-    setTimeout(() => {
-      if (generation !== inputGeneration) return;
-      startArecordForDevice(devId, true);
-    }, CLEANUP_DELAY);
-  }, INPUT_RESTART_DELAY);
+function exitForRestart(devId, reason) {
+  log.error(`arecord failed for ${devId} (${reason}) — exiting for systemd restart`);
+  io.emit('serverError', { message: `Input device failed — service will restart` });
+  process.exit(1);
 }
 
 // Setup arecord process event handlers — tagged with generation so stale handlers are no-ops
@@ -619,13 +509,7 @@ function setupArecordHandlers(devId, generation) {
 
     if (currentInput !== devId) return;
 
-    if (code !== 0 || signal) {
-      console.error(`arecord exited unexpectedly with code ${code}, signal ${signal} for ${devId}`);
-      io.emit('serverError', { message: `Input device disconnected - attempting to reconnect...` });
-    } else {
-      log.warn(`arecord exited cleanly (code 0) for ${devId} — restarting`);
-    }
-    scheduleInputRestart(devId, generation);
+    exitForRestart(devId, `code=${code} signal=${signal}`);
   });
 }
 
@@ -1113,7 +997,6 @@ io.on('connection', socket => {
     if (socket.id !== sessionOwner) return;
 
     try {
-      inputRestartAttempts = 0;
       cleanupCurrentInput();
       currentInput = devId;
 
