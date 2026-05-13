@@ -417,12 +417,21 @@ describe('Input Process Management', () => {
   });
 });
 
-describe('arecord Spawn Configuration', () => {
-  test('should include buffer-size flag in arecord arguments', () => {
-    const devId = 'plughw:0,0';
-    const args = ["-D", devId, "-c", "2", "-f", "S16_LE", "-r", "44100", "--buffer-size=131072"];
-    expect(args).toContain('--buffer-size=131072');
-    expect(args.indexOf('--buffer-size=131072')).toBe(args.length - 1);
+describe('arecord Spawn Arguments (source validation)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+
+  test('should use raw format to avoid WAV 2GB limit', () => {
+    expect(source).toMatch(/spawn\("arecord".*"-t",\s*"raw"/s);
+  });
+
+  test('should specify buffer size', () => {
+    expect(source).toMatch(/spawn\("arecord".*"--buffer-size=/s);
+  });
+
+  test('should capture stereo 16-bit at 44100Hz', () => {
+    expect(source).toMatch(/spawn\("arecord".*"-c",\s*"2".*"-f",\s*"S16_LE".*"-r",\s*"44100"/s);
   });
 });
 

@@ -249,7 +249,19 @@ const RMS_LOG_INTERVAL_MS = 10000; // every 10 seconds
 
 setInterval(() => {
   const mem = process.memoryUsage();
-  log.debug(`[memory] rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB`);
+  let systemMem = '';
+  try {
+    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+    const available = meminfo.match(/MemAvailable:\s+(\d+)/);
+    const swapFree = meminfo.match(/SwapFree:\s+(\d+)/);
+    const swapTotal = meminfo.match(/SwapTotal:\s+(\d+)/);
+    if (available) systemMem = ` sys_avail=${Math.round(parseInt(available[1]) / 1024)}MB`;
+    if (swapTotal && swapFree) {
+      const swapUsed = parseInt(swapTotal[1]) - parseInt(swapFree[1]);
+      if (swapUsed > 0) systemMem += ` swap=${Math.round(swapUsed / 1024)}MB`;
+    }
+  } catch (_) {}
+  log.debug(`[memory] rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB external=${Math.round(mem.external / 1024 / 1024)}MB${systemMem}`);
 }, 300000);
 
 // Smoothed RMS via exponential moving average — distinguishes sustained
@@ -691,8 +703,16 @@ if (blue) {
 // =======================
 // Use dnssd2 for better service change/down event handling
 let browser = dnssd.Browser(dnssd.tcp('airplay'));
+let airplayChurnCount = 0;
+setInterval(() => {
+  if (airplayChurnCount > 10) {
+    log.warn(`[mdns] High AirPlay device churn: ${airplayChurnCount} events in the last 5 minutes`);
+  }
+  airplayChurnCount = 0;
+}, 300000);
 
 browser.on('serviceUp', data => {
+  airplayChurnCount++;
   try {
     if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
@@ -717,6 +737,7 @@ browser.on('serviceUp', data => {
 });
 
 browser.on('serviceChanged', data => {
+  airplayChurnCount++;
   try {
     if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
@@ -751,6 +772,7 @@ browser.on('serviceChanged', data => {
 });
 
 browser.on('serviceDown', data => {
+  airplayChurnCount++;
   try {
     if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
@@ -971,7 +993,7 @@ app.get('/', (req, res) => {
 let sessionOwner = null;
 
 io.on('connection', socket => {
-  console.log("Client connected:", socket.id);
+  log.info(`Client connected: ${socket.id} (${io.sockets.sockets.size} total)`);
 
   if (!sessionOwner) {
     sessionOwner = socket.id;
@@ -1117,7 +1139,7 @@ io.on('connection', socket => {
   });
 
   socket.on('disconnect', () => {
-    console.log("Client disconnected:", socket.id);
+    log.info(`Client disconnected: ${socket.id} (${io.sockets.sockets.size} remaining)`);
 
     if (socket.id === sessionOwner) {
       sessionOwner = null;
@@ -1139,6 +1161,14 @@ io.on('connection', socket => {
 let PORT = process.env.BABEL_PORT || 3000;
 server.listen(PORT, () => {
   console.log("Babelpod listening on port:", PORT);
+  log.info(`[startup] node=${process.version} pid=${process.pid} platform=${process.platform} arch=${process.arch}`);
+  try {
+    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+    const total = meminfo.match(/MemTotal:\s+(\d+)/);
+    const available = meminfo.match(/MemAvailable:\s+(\d+)/);
+    const cma = meminfo.match(/CmaTotal:\s+(\d+)/);
+    log.info(`[startup] mem_total=${total ? Math.round(parseInt(total[1]) / 1024) : '?'}MB mem_avail=${available ? Math.round(parseInt(available[1]) / 1024) : '?'}MB cma=${cma ? Math.round(parseInt(cma[1]) / 1024) : '?'}MB`);
+  } catch (_) {}
 });
 
 // =======================
