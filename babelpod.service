@@ -3,6 +3,8 @@
 Description=Babelpod audio streaming service
 Wants=network-online.target avahi-daemon.service bluetooth.target
 After=network-online.target avahi-daemon.service bluetooth.target sound.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -19,11 +21,14 @@ WorkingDirectory=/home/pi/babelpod
 Environment=NODE_ENV=production
 # Some audio libs rely on XDG_RUNTIME_DIR to talk to BlueZ cleanly
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# LOG_LEVEL: debug | info | warn | error (default: info)
+# Use debug while tuning autoconnect thresholds; dial back to info for steady state
+Environment=LOG_LEVEL=debug
 
 # Start the Node 20 binary directly
-ExecStart=/usr/bin/node /home/pi/babelpod/index.js
+ExecStart=/usr/bin/node --max-old-space-size=128 /home/pi/babelpod/index.js
 
-# Restart strategy: keep service alive
+# Restart strategy: keep service alive, rate-limited to prevent infinite loops
 Restart=always
 RestartSec=5
 

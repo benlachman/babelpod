@@ -133,6 +133,95 @@ Claim session ownership. No payload required.
 {}
 ```
 
+### `setConfig`
+
+Update instance configuration. Partial updates allowed — only fields present are changed. Requires session ownership.
+
+```json
+{
+  "displayName": "Living Room Pi",
+  "defaultInputId": "plughw:0,0",
+  "defaultOutputIds": ["air:Kitchen", "air:Living Room"],
+  "defaultVolume": 50,
+  "autoconnectEnabled": true,
+  "autoconnectThreshold": 0.01
+}
+```
+
+### `setAutoconnect`
+
+Toggle the autoconnect state machine. `"listening"` arms autoconnect (enters idle/listening). `"paused"` is a master kill switch — stops all outputs immediately. Requires session ownership.
+
+```json
+{ "state": "listening" }
+```
+
+## Instance Configuration
+
+BabelPod stores instance configuration in `babelpod.config.json` alongside the server. Configuration persists across restarts and is editable from any client via the `setConfig` event.
+
+### Server to Client
+
+**`config`** — Sent when configuration changes. Also included in the `state` event on connection.
+
+```json
+{
+  "displayName": "PattyPi",
+  "defaultInputId": "plughw:0,0",
+  "defaultOutputIds": ["air:Kitchen"],
+  "defaultVolume": 50,
+  "autoconnectEnabled": true,
+  "autoconnectThreshold": 0.01
+}
+```
+
+## Autoconnect
+
+BabelPod can automatically detect audio on the input and route it to configured default speakers. Uses RMS level monitoring with an exponential moving average to distinguish sustained music from transient surface noise.
+
+### Server to Client
+
+**`autoconnect`** — Sent when the autoconnect state changes.
+
+```json
+{ "state": "idle" }
+```
+
+Valid states: `"paused"`, `"idle"`, `"detecting"`, `"connected"`, `"silence"`
+
+**`rmsLevel`** — Sent at ~4Hz with the current input audio level (0.0-1.0 range).
+
+```json
+{ "level": 0.042 }
+```
+
+### State Machine
+
+- **paused** — Master kill switch. All outputs stopped. Autoconnect won't trigger.
+- **idle** — Armed and listening. Monitoring input RMS level. Outputs disconnected.
+- **detecting** — Signal above threshold detected, sustaining for 250ms to filter transient bumps (e.g., table bumps). Uses raw RMS.
+- **connected** — Audio routing active. Default outputs connected. Uses smoothed RMS with hysteresis (threshold/4) to avoid flip-flopping during quiet passages.
+- **silence** — Silence detected while connected. Outputs disconnect after 5 minutes of sustained silence. Uses smoothed RMS.
+
+The `"listening"` client command enters `idle` (arms autoconnect). The `"paused"` command stops everything immediately. On server restart, state is determined by `config.autoconnectEnabled`.
+
+### Threshold Configuration
+
+- **Phono mode** (with preamp): threshold `0.01` — music at 0.03-0.08 smoothed, surface noise at 0.001-0.002 smoothed
+- **Line mode** (no preamp): threshold `0.0005` — much quieter signal
+
+### Extended `state` Event
+
+The `state` event includes config and autoconnect state:
+
+```json
+{
+  ...existing fields...,
+  "config": { ... },
+  "autoconnectState": "idle"
+}
+```
+
 ## Session Ownership
 
 Only one client controls BabelPod at a time. The session model works as follows:
