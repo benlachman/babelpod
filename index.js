@@ -831,7 +831,7 @@ browser.start();
 
 // Cold-boot mDNS race: TXT records (including gpn for stereo pairs) may not
 // be resolved on initial serviceUp when the network is still warming up.
-// One-time restart after discovery settles to re-resolve with warm network.
+// One-time restart after initial discovery settles to re-resolve with warm network.
 let browserRestarting = false;
 setTimeout(() => {
   const hasMissingPairData = availableAirplayOutputs.some(d => d.stereo === null);
@@ -844,7 +844,7 @@ setTimeout(() => {
       browserRestarting = false;
     }, 1000);
   }
-}, 30000);
+}, 10000);
 
 // ============ Advertise BabelPod service
 let advertise = null;
