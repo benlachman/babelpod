@@ -720,7 +720,14 @@ browser.on('serviceUp', data => {
       const address = data.addresses[0];
       const port = data.port;
       const st = data.txt?.gpn || null;
-      if (!availableAirplayOutputs.some(o => o.host === address && o.port === port)) {
+      const existing = availableAirplayOutputs.find(o => o.host === address && o.port === port);
+      if (existing) {
+        if (st && !existing.stereo) {
+          existing.stereo = st;
+          log.info(`AirPlay device ${match[1]} gained stereo pair name: ${st}`);
+          updateAllOutputs();
+        }
+      } else {
         availableAirplayOutputs.push({
           name: match[1],
           stereo: st,
@@ -751,7 +758,7 @@ browser.on('serviceChanged', data => {
       const device = availableAirplayOutputs.find(o => o.host === address && o.port === port);
       if (device) {
         device.name = match[1];
-        device.stereo = st;
+        device.stereo = st ?? device.stereo;
         console.log(`AirPlay device updated: ${match[1]} at ${address}:${port}`);
         updateAllOutputs();
       } else {
@@ -820,6 +827,18 @@ browser.on('error', (error) => {
 
 // Start the browser
 browser.start();
+
+// Cold-boot mDNS race: TXT records (including gpn for stereo pairs) may not
+// be resolved on initial serviceUp when the network is still warming up.
+// One-time restart after discovery settles to re-resolve with warm network.
+setTimeout(() => {
+  const hasMissingPairData = availableAirplayOutputs.some(d => d.stereo === null);
+  if (hasMissingPairData) {
+    log.info('[mdns] Restarting discovery to refresh TXT records (stereo pair data missing)');
+    browser.stop();
+    setTimeout(() => browser.start(), 1000);
+  }
+}, 30000);
 
 // ============ Advertise BabelPod service
 let advertise = null;
