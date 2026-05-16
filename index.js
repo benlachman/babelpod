@@ -781,6 +781,7 @@ browser.on('serviceChanged', data => {
 browser.on('serviceDown', data => {
   airplayChurnCount++;
   try {
+    if (browserRestarting) return;
     if (!data.fullname || !data.addresses?.length) return;
     const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
     if (match && match.length > 1) {
@@ -831,12 +832,17 @@ browser.start();
 // Cold-boot mDNS race: TXT records (including gpn for stereo pairs) may not
 // be resolved on initial serviceUp when the network is still warming up.
 // One-time restart after discovery settles to re-resolve with warm network.
+let browserRestarting = false;
 setTimeout(() => {
   const hasMissingPairData = availableAirplayOutputs.some(d => d.stereo === null);
   if (hasMissingPairData) {
     log.info('[mdns] Restarting discovery to refresh TXT records (stereo pair data missing)');
+    browserRestarting = true;
     browser.stop();
-    setTimeout(() => browser.start(), 1000);
+    setTimeout(() => {
+      browser.start();
+      browserRestarting = false;
+    }, 1000);
   }
 }, 30000);
 
