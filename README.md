@@ -14,6 +14,7 @@ BabelPod is a lightweight Node.js application that captures audio from a selecte
 - Optional PCM device scanning (can be disabled for better performance on systems that don't use ALSA devices).
 - Enhanced mDNS service handling for dynamic IP address changes.
 - Simple UI served by Express + Socket.IO.
+- **Optional:** Turntable power control via a Matter/HomeKit smart plug, with automatic power-off after sustained silence (record left spinning in the runout groove). See `API.md` § "Turntable Power & Silence Auto-Off" for setup.
 
 ## Prerequisites
 

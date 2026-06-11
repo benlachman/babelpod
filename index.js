@@ -20,6 +20,8 @@ const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
 const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume } = require('./lib/devices');
+const { SilenceAutoOff } = require('./lib/turntable');
+const { MatterPlugController } = require('./lib/plugController');
 
 // =======================
 // 1a) Log level
@@ -46,7 +48,17 @@ const DEFAULT_CONFIG = {
   defaultOutputIds: [],
   defaultVolume: 50,
   autoconnectEnabled: false,
-  autoconnectThreshold: 0.01
+  autoconnectThreshold: 0.01,
+  // Turntable smart plug (Matter). Commission once by putting the plug in
+  // pairing mode from Apple Home and setting the code here; credentials then
+  // persist in .matter-storage and the code is no longer needed.
+  turntablePlugEnabled: false,
+  turntablePlugPairingCode: null,
+  // Silence auto-off: cut the plug after sustained silence (record left
+  // spinning in the runout groove).
+  autoOffEnabled: false,
+  autoOffSilenceThresholdDb: -50,
+  autoOffSilenceMinutes: 20
 };
 
 let config = { ...DEFAULT_CONFIG };
@@ -139,8 +151,9 @@ class RmsMonitorTransform extends stream.Transform {
   _transform(chunk, encoding, callback) {
     lastInputDataTime = Date.now();
 
-    // Skip RMS calculation when autoconnect is paused (save CPU)
-    if (autoconnectState.state === 'paused') {
+    // Skip RMS calculation when nothing consumes it (save CPU): autoconnect
+    // paused and silence auto-off not armed
+    if (autoconnectState.state === 'paused' && !silenceAutoOff.armed) {
       callback(null, chunk);
       return;
     }
@@ -379,11 +392,109 @@ function setAutoconnectState(newState) {
   }
 }
 
-// Hook RMS readings into autoconnect state machine
+// Hook RMS readings into autoconnect state machine and silence auto-off
 function wireRmsMonitor() {
   rmsMonitor.on('rms', tickAutoconnect);
+  rmsMonitor.on('rms', rms => silenceAutoOff.handleRms(rms));
 }
 wireRmsMonitor();
+
+// =======================
+// 4d) Turntable smart plug & silence auto-off
+// =======================
+// The turntable is plugged into a Matter smart plug commissioned onto
+// BabelPod's own fabric (it stays paired with Apple Home — multi-admin).
+// The OnOff attribute subscription reports every hardware state change,
+// including ones made from Apple Home or the plug's physical button, and
+// each one is broadcast to all clients as `turntablePower`.
+let plugController = null;
+
+const silenceAutoOff = new SilenceAutoOff({
+  thresholdDb: config.autoOffSilenceThresholdDb,
+  durationMs: (config.autoOffSilenceMinutes || 20) * 60 * 1000,
+  onTrigger: handleAutoOffTrigger
+});
+
+function buildTurntablePowerPayload() {
+  return { on: plugController.isOn, reachable: plugController.isReachable };
+}
+
+function broadcastTurntablePower() {
+  if (!plugController) return;
+  io.emit('turntablePower', buildTurntablePowerPayload());
+}
+
+// Monitor for silence only when it can lead to an auto-off: feature enabled,
+// a real input selected, and the plug actually on.
+function updateAutoOffArming() {
+  silenceAutoOff.configure({
+    thresholdDb: config.autoOffSilenceThresholdDb,
+    durationMs: (config.autoOffSilenceMinutes || 20) * 60 * 1000
+  });
+  const armed = !!plugController && config.autoOffEnabled &&
+    currentInput !== 'void' && plugController.isOn;
+  silenceAutoOff.setArmed(armed);
+}
+
+function handleAutoOffTrigger() {
+  const minutes = config.autoOffSilenceMinutes || 20;
+  log.info(`[auto-off] ${minutes} min of silence — powering turntable off`);
+  io.emit('status', { message: `Turntable powered off after ${minutes} min of silence` });
+  applyTurntablePower(false);
+}
+
+// Shared control core for turntable power. Socket.IO handlers gate on session
+// ownership before calling this; internal automation (silence auto-off) calls
+// it directly — the privileged channel that bypasses the owner lock without
+// touching session ownership. The resulting `turntablePower` broadcast comes
+// from the OnOff subscription, never synthesized from the command, so clients
+// always see the real hardware state (self-correcting on failed commands).
+function applyTurntablePower(on) {
+  if (!plugController) {
+    io.emit('serverError', { message: 'No turntable plug configured' });
+    return;
+  }
+  if (!plugController.isReachable) {
+    io.emit('serverError', { message: 'Turntable plug is unreachable' });
+    broadcastTurntablePower();
+    return;
+  }
+  plugController.setPower(on).catch(e => {
+    console.error("Error setting turntable plug power:", e);
+    io.emit('serverError', { message: `Turntable plug error: ${e.message}` });
+    broadcastTurntablePower();
+  });
+}
+
+async function startTurntablePlug() {
+  if (!config.turntablePlugEnabled) return;
+
+  plugController = new MatterPlugController({
+    pairingCode: config.turntablePlugPairingCode,
+    storagePath: path.join(__dirname, '.matter-storage'),
+    log
+  });
+
+  plugController.on('change', ({ on, reachable }) => {
+    log.info(`[plug] state changed: on=${on} reachable=${reachable}`);
+    if (on) silenceAutoOff.reset(); // power restored — start a fresh silence window
+    updateAutoOffArming();
+    broadcastTurntablePower();
+  });
+
+  try {
+    await plugController.start();
+    log.info(`[plug] connected: on=${plugController.isOn} reachable=${plugController.isReachable}`);
+    updateAutoOffArming();
+    broadcastTurntablePower();
+  } catch (e) {
+    // Keep the controller so clients see the capability with reachable: false
+    console.error("Turntable plug setup failed:", e.message);
+    io.emit('serverError', { message: `Turntable plug setup failed: ${e.message}` });
+    broadcastTurntablePower();
+  }
+}
+startTurntablePlug();
 
 // =======================
 // 5) Main audio duplicator
@@ -563,7 +674,7 @@ function buildCleanOutputs() {
 }
 
 function buildStatePayload() {
-  return {
+  const state = {
     version: 1,
     sessionOwner,
     inputs: buildCleanInputs(),
@@ -574,6 +685,12 @@ function buildStatePayload() {
     config,
     autoconnectState: autoconnectState.state
   };
+  // Capability signaling: present only when a plug is configured — clients
+  // show the turntable power control based on this field's presence
+  if (plugController) {
+    state.turntablePower = buildTurntablePowerPayload();
+  }
+  return state;
 }
 
 // Emit updates to clients
@@ -957,6 +1074,7 @@ io.on('connection', socket => {
     try {
       cleanupCurrentInput();
       currentInput = devId;
+      updateAutoOffArming();
 
       if (devId === "void") {
         inputGeneration++;
@@ -1050,19 +1168,33 @@ io.on('connection', socket => {
     const oldDisplayName = config.displayName;
 
     // Only allow known fields
-    const allowedFields = ['displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'autoconnectEnabled', 'autoconnectThreshold'];
+    const allowedFields = [
+      'displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume',
+      'autoconnectEnabled', 'autoconnectThreshold',
+      'autoOffEnabled', 'autoOffSilenceThresholdDb', 'autoOffSilenceMinutes'
+    ];
     const filtered = {};
     for (const key of allowedFields) {
       if (key in data) filtered[key] = data[key];
     }
 
     saveConfig(filtered);
+    updateAutoOffArming();
 
     if (config.displayName !== oldDisplayName) {
       restartAdvertisement();
     }
 
     io.emit('status', { message: 'Settings saved' });
+  });
+
+  socket.on('setTurntablePower', (data) => {
+    const on = data?.on;
+    if (typeof on !== 'boolean') return;
+    if (socket.id !== sessionOwner) return;
+
+    console.log("Setting turntable power:", on);
+    applyTurntablePower(on);
   });
 
   socket.on('setAutoconnect', (data) => {
