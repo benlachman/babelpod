@@ -26,15 +26,18 @@ describe('dbfsFromRms', () => {
 
 describe('SilenceAutoOff', () => {
   const MINUTE = 60 * 1000;
-  const LOUD = 0.05;     // ~-26 dBFS, well above -50
-  const SILENT = 0.0001; // -80 dBFS, well below -50
+  const LOUD = 0.05;       // ~-26 dBFS: music playing
+  const SILENT = 0.0015;   // ~-56 dBFS: turntable on, runout-groove surface noise (dead band)
+  const DEAD_LINE = 0.0001; // -80 dBFS: no source at all — turntable already off
 
-  function createDetector({ durationMs = 20 * MINUTE, thresholdDb = -50 } = {}) {
+  function createDetector({ durationMs = 20 * MINUTE, thresholdDb = -50, noiseFloorDb = -62 } = {}) {
     let currentTime = 0;
     const onTrigger = jest.fn();
     const detector = new SilenceAutoOff({
       thresholdDb,
+      noiseFloorDb,
       durationMs,
+      smoothingAlpha: 1, // disable smoothing for deterministic single-sample tests
       onTrigger,
       now: () => currentTime
     });
@@ -128,9 +131,73 @@ describe('SilenceAutoOff', () => {
 
   test('configure ignores invalid values', () => {
     const { detector } = createDetector();
-    detector.configure({ thresholdDb: NaN, durationMs: -5 });
+    detector.configure({ thresholdDb: NaN, noiseFloorDb: 'low', durationMs: -5 });
     expect(detector.thresholdDb).toBe(-50);
+    expect(detector.noiseFloorDb).toBe(-62);
     expect(detector.durationMs).toBe(20 * 60 * 1000);
+  });
+
+  test('a dead line never triggers (turntable already off)', () => {
+    const { detector, onTrigger, advance } = createDetector();
+    detector.setArmed(true);
+    detector.handleRms(DEAD_LINE);
+    advance(40 * MINUTE);
+    detector.handleRms(DEAD_LINE);
+    advance(40 * MINUTE);
+    detector.handleRms(DEAD_LINE);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  test('digital silence (RMS 0) never triggers', () => {
+    const { detector, onTrigger, advance } = createDetector();
+    detector.setArmed(true);
+    detector.handleRms(0);
+    advance(40 * MINUTE);
+    detector.handleRms(0);
+    expect(onTrigger).not.toHaveBeenCalled();
+  });
+
+  test('dropping below the noise floor resets an accumulating window', () => {
+    const { detector, onTrigger, advance } = createDetector();
+    detector.setArmed(true);
+    detector.handleRms(SILENT); // runout groove — window starts
+    advance(19 * MINUTE);
+    detector.handleRms(DEAD_LINE); // turntable switched off — window resets
+    advance(5 * MINUTE);
+    detector.handleRms(SILENT); // back in the dead band — fresh window
+    advance(19 * MINUTE);
+    detector.handleRms(SILENT);
+    expect(onTrigger).not.toHaveBeenCalled();
+    advance(1 * MINUTE);
+    detector.handleRms(SILENT);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  test('smoothing rides out a momentary dip below the noise floor', () => {
+    let currentTime = 0;
+    const onTrigger = jest.fn();
+    const detector = new SilenceAutoOff({
+      thresholdDb: -50,
+      noiseFloorDb: -62,
+      durationMs: 20 * MINUTE,
+      onTrigger,
+      now: () => currentTime
+    }); // default smoothingAlpha 0.15
+    detector.setArmed(true);
+
+    // Sustained surface noise seeds the smoothed level in the dead band
+    for (let i = 0; i < 20; i++) detector.handleRms(SILENT);
+    expect(detector.silentSince).not.toBeNull();
+    const windowStart = detector.silentSince;
+
+    // One raw sample at the dead-line level: smoothed stays in the dead band
+    detector.handleRms(DEAD_LINE);
+    expect(detector.silentSince).toBe(windowStart);
+
+    // ...and the window still fires on schedule
+    currentTime += 20 * MINUTE;
+    detector.handleRms(SILENT);
+    expect(onTrigger).toHaveBeenCalledTimes(1);
   });
 });
 

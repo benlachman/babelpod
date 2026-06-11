@@ -174,6 +174,7 @@ Update instance configuration. Partial updates allowed — only fields present a
   "autoconnectThreshold": 0.01,
   "autoOffEnabled": true,
   "autoOffSilenceThresholdDb": -50,
+  "autoOffNoiseFloorDb": -62,
   "autoOffSilenceMinutes": 20
 }
 ```
@@ -260,7 +261,7 @@ The turntable can be plugged into a HomeKit-enabled **Matter** smart plug. Babel
 
 - Exposes the plug over the API: `setTurntablePower` / `turntablePower` and `state.turntablePower`.
 - Subscribes to the plug's OnOff attribute, so changes made from Apple Home or the physical button are broadcast to all clients.
-- Optionally powers the plug **off** after sustained input silence (a record left spinning in the runout groove). The silence detector taps the same RMS pipeline as autoconnect, converts to dBFS, and fires only after `autoOffSilenceMinutes` of continuous silence below `autoOffSilenceThresholdDb` — any louder audio resets the window, so inter-track gaps and quiet passages never trigger. After firing it disarms until power returns.
+- Optionally powers the plug **off** after sustained input silence (a record left spinning in the runout groove). The silence detector taps the same RMS pipeline as autoconnect, converts to dBFS (with ~1s smoothing), and fires only after `autoOffSilenceMinutes` of continuous signal in the dead band between `autoOffNoiseFloorDb` and `autoOffSilenceThresholdDb` — the signature of a powered turntable with nothing playing. Louder audio (music) resets the window, so inter-track gaps and quiet passages never trigger; so does a level **below the noise floor**, which means the turntable itself is already off and cutting the outlet would only be an annoyance. After firing it disarms until power returns.
 
 ### Setup
 
