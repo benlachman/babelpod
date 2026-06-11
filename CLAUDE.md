@@ -34,7 +34,7 @@ Check logs: `ssh pi@PattyPi.local 'journalctl -u babelpod -f'`
 
 ## Architecture
 
-The entire server is a single file (`index.js`, ~900 lines). The web UI is a single file (`index.html`).
+The server lives in `index.js` (~1100 lines). Pure, hardware-free helpers (PCM device parsing, AirPlay mDNS record parsing, output unification) live in `lib/devices.js` so they can be unit tested directly. The web UI is a single file (`index.html`).
 
 ### Audio Pipeline
 

@@ -3,42 +3,78 @@
  * These tests don't require hardware and test pure logic functions
  */
 
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume } = require('../lib/devices');
+
 describe('BabelPod Utility Functions', () => {
+  describe('parsePcmDevices', () => {
+    const procAsoundPcm = [
+      '00-00: bcm2835 HDMI 1 : bcm2835 HDMI 1 : playback 8',
+      '00-01: bcm2835 Headphones : bcm2835 Headphones : playback 8',
+      '01-00: USB Audio : USB Audio : playback 1 : capture 1',
+      ''
+    ].join('\n');
+
+    test('should parse plughw device IDs from card-device numbers', () => {
+      const { outputs } = parsePcmDevices(procAsoundPcm);
+      expect(outputs.map(d => d.id)).toEqual(['plughw:0,0', 'plughw:0,1', 'plughw:1,0']);
+    });
+
+    test('should split playback and capture devices into outputs and inputs', () => {
+      const { outputs, inputs } = parsePcmDevices(procAsoundPcm);
+      expect(outputs).toHaveLength(3);
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toMatchObject({ id: 'plughw:1,0', name: 'USB Audio' });
+    });
+
+    test('should skip malformed lines', () => {
+      const { outputs, inputs } = parsePcmDevices('not a pcm line\n\n');
+      expect(outputs).toEqual([]);
+      expect(inputs).toEqual([]);
+    });
+  });
+
   describe('buildUnifiedOutputs', () => {
+    const pcmOutputs = [{ id: 'plughw:0,0', name: 'Headphones', output: true, input: false }];
+
     test('should combine local and AirPlay outputs', () => {
-      // This is a placeholder test
-      // In a real implementation, we would extract buildUnifiedOutputs
-      // into a separate module and test it here
-      expect(true).toBe(true);
+      const airplay = [{ name: 'Kitchen', stereo: null, host: '192.168.1.10', port: 7000 }];
+      const unified = buildUnifiedOutputs(pcmOutputs, airplay);
+      expect(unified.map(o => o.uiId)).toEqual(['plughw:0,0', 'air:Kitchen']);
+      expect(unified[0].name).toBe('Headphones - Output');
+      expect(unified[1].name).toBe('Kitchen - AirPlay');
+      expect(unified[1].devices).toEqual([{ host: '192.168.1.10', port: 7000, isStereo: false }]);
     });
 
-    test('should deduplicate AirPlay devices', () => {
-      // Test that duplicate AirPlay devices are unified
-      expect(true).toBe(true);
+    test('should deduplicate AirPlay devices with the same name and host:port', () => {
+      const airplay = [
+        { name: 'Kitchen', stereo: null, host: '192.168.1.10', port: 7000 },
+        { name: 'Kitchen', stereo: null, host: '192.168.1.10', port: 7000 }
+      ];
+      const unified = buildUnifiedOutputs([], airplay);
+      expect(unified).toHaveLength(1);
     });
 
-    test('should group stereo pairs', () => {
-      // Test that stereo pairs are grouped correctly
-      expect(true).toBe(true);
+    test('should group stereo pairs sharing a group name', () => {
+      const airplay = [
+        { name: 'Left HomePod', stereo: 'Living Room', host: '192.168.1.20', port: 7000 },
+        { name: 'Right HomePod', stereo: 'Living Room', host: '192.168.1.21', port: 7000 }
+      ];
+      const unified = buildUnifiedOutputs([], airplay);
+      expect(unified).toHaveLength(1);
+      expect(unified[0]).toMatchObject({
+        uiId: 'airpair:Living Room',
+        name: 'Living Room - AirPlay Stereo',
+        isStereo: true
+      });
+      expect(unified[0].devices).toHaveLength(2);
     });
   });
 
-  describe('Device ID parsing', () => {
-    test('should parse plughw device IDs correctly', () => {
-      // Test device ID parsing from /proc/asound/pcm
-      expect(true).toBe(true);
-    });
-  });
-
-  describe('Session management', () => {
-    test('should handle session owner changes', () => {
-      // Test session owner logic
-      expect(true).toBe(true);
-    });
-
-    test('should prevent non-owners from making changes', () => {
-      // Test permission checks
-      expect(true).toBe(true);
+  describe('clampVolume', () => {
+    test('should clamp out-of-range values to 0-100', () => {
+      expect(clampVolume(150)).toBe(100);
+      expect(clampVolume(-10)).toBe(0);
+      expect(clampVolume(42)).toBe(42);
     });
   });
 
@@ -83,37 +119,38 @@ describe('BabelPod Utility Functions', () => {
     });
   });
 
-  describe('mDNS Service Event Handling', () => {
-    test('should handle AirPlay device regex pattern', () => {
-      // Test the regex pattern for AirPlay service names
-      const fullname = 'Living Room._airplay._tcp.local';
-      const match = /(.*)\._airplay\._tcp\.local/.exec(fullname);
-      expect(match).not.toBeNull();
-      expect(match[1]).toBe('Living Room');
+  describe('parseAirplayService', () => {
+    test('should parse an AirPlay mDNS record', () => {
+      const service = parseAirplayService({
+        fullname: 'Living Room._airplay._tcp.local',
+        addresses: ['192.168.1.100'],
+        port: 7000,
+        txt: {}
+      });
+      expect(service).toEqual({ name: 'Living Room', stereo: null, host: '192.168.1.100', port: 7000 });
     });
 
     test('should extract stereo group name from txt records', () => {
-      // Test extraction of gpn (group name) from mDNS txt records
-      const txt = { gpn: 'Bedroom Stereo Pair' };
-      const stereoName = txt.gpn || null;
-      expect(stereoName).toBe('Bedroom Stereo Pair');
+      const service = parseAirplayService({
+        fullname: 'Bedroom Left._airplay._tcp.local',
+        addresses: ['192.168.1.101'],
+        port: 7000,
+        txt: { gpn: 'Bedroom Stereo Pair' }
+      });
+      expect(service.stereo).toBe('Bedroom Stereo Pair');
     });
 
-    test('should handle device without stereo pairing', () => {
-      // Test that devices without gpn are handled as single devices
-      const txt = {};
-      const stereoName = txt.gpn || null;
-      expect(stereoName).toBeNull();
+    test('should return null for records without a fullname or addresses', () => {
+      expect(parseAirplayService({ addresses: ['192.168.1.1'], port: 7000 })).toBeNull();
+      expect(parseAirplayService({ fullname: 'X._airplay._tcp.local', addresses: [], port: 7000 })).toBeNull();
     });
 
-    test('should track device address and port for updates', () => {
-      // Test that we can identify devices by address:port combination
-      const device = {
-        host: '192.168.1.100',
-        port: 7000
-      };
-      const deviceId = `${device.host}:${device.port}`;
-      expect(deviceId).toBe('192.168.1.100:7000');
+    test('should return null for non-AirPlay services', () => {
+      expect(parseAirplayService({
+        fullname: 'Printer._ipp._tcp.local',
+        addresses: ['192.168.1.50'],
+        port: 631
+      })).toBeNull();
     });
   });
 
