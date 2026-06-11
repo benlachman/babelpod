@@ -19,6 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume } = require('./lib/devices');
 
 // =======================
 // 1a) Log level
@@ -529,76 +530,13 @@ let unifiedOutputs = [];
 function scanPcmDevices() {
   try {
     const text = fs.readFileSync('/proc/asound/pcm', 'utf8');
-    const lines = text.split('\n').filter(line => line.trim() !== '');
-    const all = lines.map(line => {
-      const parts = line.split(':');
-      if (parts.length < 3) return null;
-      const devName = parts[2].trim();
-      const devId = "plughw:" + parts[0].split("-").map(x => parseInt(x, 10)).join(",");
-      return {
-        id: devId,
-        name: devName,
-        output: parts.some(t => t.includes("playback")),
-        input: parts.some(t => t.includes("capture"))
-      };
-    }).filter(Boolean);
-    availablePcmOutputs = all.filter(d => d.output);
-    availablePcmInputs = all.filter(d => d.input);
+    const { outputs, inputs } = parsePcmDevices(text);
+    availablePcmOutputs = outputs;
+    availablePcmInputs = inputs;
   } catch (e) {
     console.error("Error scanning /proc/asound/pcm:", e);
     // Don't crash - just log and continue with empty lists
   }
-}
-
-// Organize available outputs into a single list
-function buildUnifiedOutputs() {
-  let local = availablePcmOutputs.map(o => ({
-    uiId: o.id,
-    name: o.name + ' - Output',
-    isStereo: false,
-    devices: [{ localId: o.id }]
-  }));
-
-  // unify airplay outputs that might appear multiple times if it's the same device
-  // we can unify them by name and host:port, ignoring duplicates
-  let unique = {};
-  for (const device of availableAirplayOutputs) {
-    // create a key to unify duplicates
-    const key = (device.name || "") + "_" + device.host + "_" + device.port;
-    if (!unique[key]) {
-      unique[key] = device;
-    }
-  }
-  let cleanedAirplayOutputs = Object.values(unique);
-
-  let grouped = {};
-  for (const device of cleanedAirplayOutputs) {
-    const st = device.stereo || `${device.host}:${device.port}`;
-    if (!grouped[st]) grouped[st] = [];
-    grouped[st].push(device);
-  }
-
-  let air = [];
-  for (const stereoName in grouped) {
-    const arr = grouped[stereoName];
-    if (arr.length === 1) {
-      const d = arr[0];
-      air.push({
-        uiId: 'air:' + d.name,
-        name: (d.name || d.host) + ' - AirPlay',
-        isStereo: false,
-        devices: [{ host: d.host, port: d.port, isStereo: false }]
-      });
-    } else {
-      air.push({
-        uiId: 'airpair:' + stereoName,
-        name: stereoName + ' - AirPlay Stereo',
-        isStereo: true,
-        devices: arr.map(d => ({ host: d.host, port: d.port, isStereo: true }))
-      });
-    }
-  }
-  return local.concat(air);
 }
 
 // Build clean payloads for clients (strip server internals)
@@ -628,7 +566,7 @@ function buildStatePayload() {
 
 // Emit updates to clients
 function updateAllOutputs() {
-  unifiedOutputs = buildUnifiedOutputs();
+  unifiedOutputs = buildUnifiedOutputs(availablePcmOutputs, availableAirplayOutputs);
   io.emit('outputs', { outputs: buildCleanOutputs() });
 }
 function updateAllInputs() {
@@ -640,6 +578,7 @@ function updateAllInputs() {
 if (!process.env.DISABLE_PCM) {
   console.log("PCM device scanning enabled");
   scanPcmDevices();
+  unifiedOutputs = buildUnifiedOutputs(availablePcmOutputs, availableAirplayOutputs);
   // Auto-select input on startup: prefer config default, then first available
   if (currentInput === "void" && availablePcmInputs.length > 0) {
     const configuredInput = config.defaultInputId && availablePcmInputs.some(d => d.id === config.defaultInputId)
@@ -650,7 +589,15 @@ if (!process.env.DISABLE_PCM) {
     currentInput = configuredInput;
     startArecordForDevice(configuredInput, false);
   }
-  setInterval(scanPcmDevices, 10000);
+  // Rescan periodically and notify clients when devices appear or disappear
+  setInterval(() => {
+    const before = JSON.stringify([availablePcmInputs, availablePcmOutputs]);
+    scanPcmDevices();
+    if (JSON.stringify([availablePcmInputs, availablePcmOutputs]) !== before) {
+      updateAllInputs();
+      updateAllOutputs();
+    }
+  }, 10000);
 } else {
   console.log("PCM device scanning disabled via DISABLE_PCM environment variable");
 }
@@ -692,98 +639,62 @@ if (blue) {
 // Use dnssd2 for better service change/down event handling
 let browser = dnssd.Browser(dnssd.tcp('airplay'));
 
-browser.on('serviceUp', data => {
+// serviceUp and serviceChanged share the same upsert logic; only notify
+// clients when the device list actually changed.
+function upsertAirplayDevice(data, eventName) {
   try {
-    if (!data.fullname || !data.addresses?.length) return;
-    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
-    if (match && match.length > 1) {
-      const address = data.addresses[0];
-      const port = data.port;
-      const st = data.txt?.gpn || null;
-      if (!availableAirplayOutputs.some(o => o.host === address && o.port === port)) {
-        availableAirplayOutputs.push({
-          name: match[1],
-          stereo: st,
-          host: address,
-          port
-        });
-        console.log(`AirPlay device discovered: ${match[1]} at ${address}:${port}`);
-        updateAllOutputs();
-      }
+    const service = parseAirplayService(data);
+    if (!service) return;
+    const existing = availableAirplayOutputs.find(o => o.host === service.host && o.port === service.port);
+    if (!existing) {
+      availableAirplayOutputs.push(service);
+      console.log(`AirPlay device discovered: ${service.name} at ${service.host}:${service.port}`);
+      updateAllOutputs();
+    } else if (existing.name !== service.name || existing.stereo !== service.stereo) {
+      existing.name = service.name;
+      existing.stereo = service.stereo;
+      console.log(`AirPlay device updated: ${service.name} at ${service.host}:${service.port}`);
+      updateAllOutputs();
     }
   } catch (e) {
-    console.error("Error processing mDNS serviceUp:", e);
+    console.error(`Error processing mDNS ${eventName}:`, e);
   }
-});
+}
 
-browser.on('serviceChanged', data => {
-  try {
-    if (!data.fullname || !data.addresses?.length) return;
-    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
-    if (match && match.length > 1) {
-      const address = data.addresses[0];
-      const port = data.port;
-      const st = data.txt?.gpn || null;
-      const oldId = 'airplay_' + address + '_' + port;
-      
-      // Find and update existing device
-      const device = availableAirplayOutputs.find(o => o.host === address && o.port === port);
-      if (device) {
-        device.name = match[1];
-        device.stereo = st;
-        console.log(`AirPlay device updated: ${match[1]} at ${address}:${port}`);
-        updateAllOutputs();
-      } else {
-        // Device not found, treat as new
-        availableAirplayOutputs.push({
-          name: match[1],
-          stereo: st,
-          host: address,
-          port
-        });
-        console.log(`AirPlay device added via change event: ${match[1]} at ${address}:${port}`);
-        updateAllOutputs();
-      }
-    }
-  } catch (e) {
-    console.error("Error processing mDNS serviceChanged:", e);
-  }
-});
+browser.on('serviceUp', data => upsertAirplayDevice(data, 'serviceUp'));
+browser.on('serviceChanged', data => upsertAirplayDevice(data, 'serviceChanged'));
 
 browser.on('serviceDown', data => {
   try {
-    if (!data.fullname || !data.addresses?.length) return;
-    const match = /(.*)\._airplay\._tcp\.local/.exec(data.fullname);
-    if (match && match.length > 1) {
-      const address = data.addresses[0];
-      const port = data.port;
-      const beforeCount = availableAirplayOutputs.length;
-      availableAirplayOutputs = availableAirplayOutputs.filter(
-        o => !(o.host === address && o.port === port)
-      );
-      if (availableAirplayOutputs.length < beforeCount) {
-        console.log(`AirPlay device removed: ${match[1]} at ${address}:${port}`);
+    const service = parseAirplayService(data);
+    if (!service) return;
+    const { name, host, port } = service;
+    const beforeCount = availableAirplayOutputs.length;
+    availableAirplayOutputs = availableAirplayOutputs.filter(
+      o => !(o.host === host && o.port === port)
+    );
+    if (availableAirplayOutputs.length < beforeCount) {
+      console.log(`AirPlay device removed: ${name} at ${host}:${port}`);
 
-        // Stop streaming to the removed device
-        const deviceKey = `${address}:${port}`;
-        if (activeAirPlayDevices.includes(deviceKey)) {
-          try {
-            airtunes.stop(deviceKey);
-          } catch (e) {
-            console.error(`Error stopping removed AirPlay device ${deviceKey}:`, e);
-          }
-          activeAirPlayDevices = activeAirPlayDevices.filter(k => k !== deviceKey);
+      // Stop streaming to the removed device
+      const deviceKey = `${host}:${port}`;
+      if (activeAirPlayDevices.includes(deviceKey)) {
+        try {
+          airtunes.stop(deviceKey);
+        } catch (e) {
+          console.error(`Error stopping removed AirPlay device ${deviceKey}:`, e);
         }
+        activeAirPlayDevices = activeAirPlayDevices.filter(k => k !== deviceKey);
+      }
 
-        updateAllOutputs();
+      updateAllOutputs();
 
-        // Remove offline devices from selectedOutputs
-        const validIds = new Set(unifiedOutputs.map(o => o.uiId));
-        const cleanedOutputs = selectedOutputs.filter(id => validIds.has(id));
-        if (cleanedOutputs.length !== selectedOutputs.length) {
-          selectedOutputs = cleanedOutputs;
-          io.emit('output', { ids: selectedOutputs });
-        }
+      // Remove offline devices from selectedOutputs
+      const validIds = new Set(unifiedOutputs.map(o => o.uiId));
+      const cleanedOutputs = selectedOutputs.filter(id => validIds.has(id));
+      if (cleanedOutputs.length !== selectedOutputs.length) {
+        selectedOutputs = cleanedOutputs;
+        io.emit('output', { ids: selectedOutputs });
       }
     }
   } catch (e) {
@@ -1063,12 +974,12 @@ io.on('connection', socket => {
 
   socket.on('setVolume', (data) => {
     const vol = data?.value;
-    if (typeof vol !== 'number') return;
+    if (typeof vol !== 'number' || !Number.isFinite(vol)) return;
     console.log("Changing output volume to:", vol);
 
     if (socket.id !== sessionOwner) return;
     try {
-      volume = vol;
+      volume = clampVolume(vol);
       // Set volume on all active AirPlay devices
       activeAirPlayDevices.forEach(deviceKey => {
         try {
@@ -1158,7 +1069,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+function shutdownGracefully() {
   console.log("\nShutting down gracefully...");
   cleanupCurrentInput();
   activeLocalOutputs.forEach(o => {
@@ -1169,17 +1080,7 @@ process.on('SIGINT', () => {
     }
   });
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', () => {
-  console.log("\nShutting down gracefully...");
-  cleanupCurrentInput();
-  activeLocalOutputs.forEach(o => {
-    try {
-      o.process.kill();
-    } catch (e) {
-      console.error("Error killing local output:", e);
-    }
-  });
-  process.exit(0);
-});
+process.on('SIGINT', shutdownGracefully);
+process.on('SIGTERM', shutdownGracefully);
