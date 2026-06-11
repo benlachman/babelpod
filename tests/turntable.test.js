@@ -186,12 +186,13 @@ describe('MatterPlugController state tracking', () => {
   });
 });
 
-describe('MatterPlugController endpoint discovery', () => {
-  // Fake matter.js node: parts list mutable, structureChanged observable
-  function createFakeNode(parts = []) {
+describe('MatterPlugController OnOff cluster discovery', () => {
+  // Fake matter.js PairedNode: mutable device list, structureChanged observable
+  function createFakeNode(devices = []) {
     const listeners = new Set();
     return {
-      parts,
+      getDevices: () => devices,
+      devices,
       events: {
         structureChanged: {
           on: fn => listeners.add(fn),
@@ -206,42 +207,53 @@ describe('MatterPlugController endpoint discovery', () => {
   function createController(node) {
     const controller = new MatterPlugController({ storagePath: '/tmp/unused' });
     controller.node = node;
-    controller.OnOffClient = class FakeOnOffClient {};
+    controller.OnOffCluster = { id: 6 };
     return controller;
   }
 
-  const onOffEndpoint = { stateOf: () => ({ onOff: true }) };
-  const otherEndpoint = { stateOf: () => undefined };
+  const fakeOnOffClient = { on: async () => {}, off: async () => {}, getOnOffAttribute: async () => true };
+  const onOffDevice = { getClusterClient: () => fakeOnOffClient };
+  const otherDevice = { getClusterClient: () => undefined };
 
-  test('resolves when the endpoint appears after a structure change', async () => {
-    const node = createFakeNode([otherEndpoint]);
+  test('resolves when the OnOff cluster appears after a structure change', async () => {
+    const node = createFakeNode([otherDevice]);
     const controller = createController(node);
 
-    const pending = controller.waitForOnOffEndpoint(1000);
-    node.parts.push(onOffEndpoint);
+    const pending = controller.waitForOnOffClient(1000);
+    node.devices.push(onOffDevice);
     node.fireStructureChanged();
 
-    await expect(pending).resolves.toBe(onOffEndpoint);
+    await expect(pending).resolves.toBe(fakeOnOffClient);
     expect(node.listenerCount()).toBe(0); // listener cleaned up
   });
 
-  test('resolves immediately when the endpoint already exists', async () => {
-    const node = createFakeNode([onOffEndpoint]);
+  test('resolves immediately when the cluster already exists', async () => {
+    const node = createFakeNode([onOffDevice]);
     const controller = createController(node);
-    await expect(controller.waitForOnOffEndpoint(1000)).resolves.toBe(onOffEndpoint);
+    await expect(controller.waitForOnOffClient(1000)).resolves.toBe(fakeOnOffClient);
   });
 
-  test('rejects after the timeout when no endpoint appears', async () => {
-    const node = createFakeNode([otherEndpoint]);
+  test('rejects after the timeout when no OnOff cluster appears', async () => {
+    const node = createFakeNode([otherDevice]);
     const controller = createController(node);
-    await expect(controller.waitForOnOffEndpoint(50)).rejects.toThrow('timed out waiting for device structure');
+    await expect(controller.waitForOnOffClient(50)).rejects.toThrow('timed out waiting for device structure');
     expect(node.listenerCount()).toBe(0);
   });
 
-  test('skips endpoints whose stateOf throws', () => {
-    const throwing = { stateOf: () => { throw new Error('unsupported behavior'); } };
-    const node = createFakeNode([throwing, onOffEndpoint]);
+  test('skips devices whose getClusterClient throws', () => {
+    const throwing = { getClusterClient: () => { throw new Error('unsupported'); } };
+    const node = createFakeNode([throwing, onOffDevice]);
     const controller = createController(node);
-    expect(controller.findOnOffEndpoint()).toBe(onOffEndpoint);
+    expect(controller.findOnOffClient()).toBe(fakeOnOffClient);
+  });
+
+  test('setPower drives the cluster client commands', async () => {
+    const calls = [];
+    const client = { on: async () => calls.push('on'), off: async () => calls.push('off') };
+    const controller = createController(createFakeNode());
+    controller.onOffClient = client;
+    await controller.setPower(true);
+    await controller.setPower(false);
+    expect(calls).toEqual(['on', 'off']);
   });
 });
