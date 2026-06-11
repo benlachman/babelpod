@@ -55,9 +55,12 @@ const DEFAULT_CONFIG = {
   turntablePlugEnabled: false,
   turntablePlugPairingCode: null,
   // Silence auto-off: cut the plug after sustained silence (record left
-  // spinning in the runout groove).
+  // spinning in the runout groove). Only levels between the noise floor and
+  // the threshold count as that kind of silence — a line below the noise
+  // floor means the turntable itself is already off, and the plug is left on.
   autoOffEnabled: false,
   autoOffSilenceThresholdDb: -50,
+  autoOffNoiseFloorDb: -62,
   autoOffSilenceMinutes: 20
 };
 
@@ -411,6 +414,7 @@ let plugController = null;
 
 const silenceAutoOff = new SilenceAutoOff({
   thresholdDb: config.autoOffSilenceThresholdDb,
+  noiseFloorDb: config.autoOffNoiseFloorDb,
   durationMs: (config.autoOffSilenceMinutes || 20) * 60 * 1000,
   onTrigger: handleAutoOffTrigger
 });
@@ -429,6 +433,7 @@ function broadcastTurntablePower() {
 function updateAutoOffArming() {
   silenceAutoOff.configure({
     thresholdDb: config.autoOffSilenceThresholdDb,
+    noiseFloorDb: config.autoOffNoiseFloorDb,
     durationMs: (config.autoOffSilenceMinutes || 20) * 60 * 1000
   });
   const armed = !!plugController && config.autoOffEnabled &&
@@ -1171,7 +1176,7 @@ io.on('connection', socket => {
     const allowedFields = [
       'displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume',
       'autoconnectEnabled', 'autoconnectThreshold',
-      'autoOffEnabled', 'autoOffSilenceThresholdDb', 'autoOffSilenceMinutes'
+      'autoOffEnabled', 'autoOffSilenceThresholdDb', 'autoOffNoiseFloorDb', 'autoOffSilenceMinutes'
     ];
     const filtered = {};
     for (const key of allowedFields) {
