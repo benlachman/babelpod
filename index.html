@@ -235,6 +235,38 @@
         border-radius: 2px;
       }
 
+      /* Turntable power */
+      .turntable-power-section {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 1rem;
+      }
+      .turntable-power-section .power-status {
+        font-size: 0.8rem;
+        color: #999;
+        margin-left: auto;
+        margin-right: 0.75rem;
+      }
+      .power-button {
+        padding: 0.4rem 1.1rem;
+        border-radius: 16px;
+        border: 1px solid #444;
+        background: #2a2a2a;
+        color: #ddd;
+        font-size: 0.9rem;
+        cursor: pointer;
+      }
+      .power-button.on {
+        background: #2e7d32;
+        border-color: #2e7d32;
+        color: white;
+      }
+      .power-button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
       /* Settings section */
       details.settings {
         margin-top: 1rem;
@@ -279,6 +311,13 @@
     <div class="container">
       <label>Input Device</label>
       <div class="radio-list" id="inputsList"></div>
+
+      <!-- Hidden unless the server reports turntablePower (capability by presence) -->
+      <div class="turntable-power-section" id="turntablePowerSection" style="display: none;">
+        <label style="margin: 0;">Turntable Power</label>
+        <span class="power-status" id="turntablePowerStatus"></span>
+        <button class="power-button" id="turntablePowerButton" onclick="toggleTurntablePower()">Off</button>
+      </div>
 
       <label for="outputVolume">Volume</label>
       <div style="display: flex; align-items: center; gap: 8px;">
@@ -378,6 +417,9 @@
       let currentConfig = {};
       let currentAutoconnectState = "paused";
       let availableOutputsList = [];
+      let turntablePower = null; // {on, reachable} — null when the server has no plug
+      let turntablePowerPending = false;
+      let turntablePowerPendingTimeout = null;
 
       const inputsList = document.getElementById("inputsList");
       const volumeRange = document.getElementById("outputVolume");
@@ -522,6 +564,8 @@
         isOwner = (socket.id === s.sessionOwner);
         if (s.config) currentConfig = s.config;
         if (s.autoconnectState) currentAutoconnectState = s.autoconnectState;
+        turntablePower = s.turntablePower || null;
+        renderTurntablePower();
 
         renderInputsList();
         updateInputSelection();
@@ -591,6 +635,15 @@
       socket.on("status", (d) => { showStatus(d.message); });
       socket.on("serverError", (d) => { showError(d.message); });
 
+      // Turntable power — always adopt the broadcast hardware state, never
+      // flip the toggle optimistically
+      socket.on("turntablePower", (d) => {
+        turntablePower = { on: d.on, reachable: d.reachable };
+        turntablePowerPending = false;
+        if (turntablePowerPendingTimeout) clearTimeout(turntablePowerPendingTimeout);
+        renderTurntablePower();
+      });
+
       // Connection lifecycle
       socket.on("connect", () => {
         lastEmittedVolume = null;
@@ -656,6 +709,44 @@
           }
         });
       });
+
+      // Turntable power controls
+      function renderTurntablePower() {
+        const section = document.getElementById("turntablePowerSection");
+        if (!turntablePower) {
+          section.style.display = "none";
+          return;
+        }
+        section.style.display = "flex";
+
+        const button = document.getElementById("turntablePowerButton");
+        const status = document.getElementById("turntablePowerStatus");
+        if (turntablePowerPending) {
+          button.disabled = true;
+          status.textContent = "Updating…";
+          return;
+        }
+        button.disabled = !turntablePower.reachable;
+        button.textContent = turntablePower.on ? "On" : "Off";
+        button.classList.toggle("on", turntablePower.on);
+        status.textContent = turntablePower.reachable ? "" : "Plug unreachable — state may be stale";
+      }
+
+      function toggleTurntablePower() {
+        if (!turntablePower || turntablePowerPending || !turntablePower.reachable) return;
+        socket.emit("setTurntablePower", { on: !turntablePower.on });
+        turntablePowerPending = true;
+        renderTurntablePower();
+        // The server confirms via a turntablePower broadcast; give up after 8s
+        if (turntablePowerPendingTimeout) clearTimeout(turntablePowerPendingTimeout);
+        turntablePowerPendingTimeout = setTimeout(() => {
+          if (turntablePowerPending) {
+            turntablePowerPending = false;
+            renderTurntablePower();
+            showError("No response from turntable plug");
+          }
+        }, 8000);
+      }
 
       // Autoconnect controls
       function toggleAutoconnect() {

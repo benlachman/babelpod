@@ -13,6 +13,8 @@
     ]
   },
   "dependencies": {
+    "@matter/main": "^0.17.2",
+    "@project-chip/matter.js": "^0.17.2",
     "airtunes2": "ciderapp/node_airtunes2#v2.4.9",
     "bluetoothctl": "https://github.com/DerDaku/node-bluetoothctl.git",
     "dnssd2": "^1.0.0",

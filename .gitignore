@@ -6,3 +6,4 @@ coverage
 .nyc_output
 *.log
 babelpod.config.json
+.matter-storage

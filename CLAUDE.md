@@ -34,7 +34,7 @@ Check logs: `ssh pi@PattyPi.local 'journalctl -u babelpod -f'`
 
 ## Architecture
 
-The server lives in `index.js` (~1100 lines). Pure, hardware-free helpers (PCM device parsing, AirPlay mDNS record parsing, output unification) live in `lib/devices.js` so they can be unit tested directly. The web UI is a single file (`index.html`).
+The server lives in `index.js` (~1300 lines). Pure or hardware-free helpers live in `lib/` so they can be unit tested directly: `lib/devices.js` (PCM device parsing, AirPlay mDNS record parsing, output unification), `lib/turntable.js` (silence auto-off detection), `lib/plugController.js` (Matter smart plug control — matter.js is lazy-loaded inside `start()` so unconfigured servers never pay its memory cost). The web UI is a single file (`index.html`).
 
 ### Audio Pipeline
 
@@ -59,6 +59,10 @@ Documented in `API.md`. Key design points:
 - **Echo detection** — server broadcasts to ALL clients including sender. Clients must track `lastEmitted` values to avoid feedback loops
 - **Event naming:** server-to-client uses nouns (`input`, `output`, `volume`, `session`), client-to-server uses `set`-prefixed verbs (`setInput`, `setOutput`, `setVolume`)
 - **`serverError` not `error`** — `error` is a reserved Socket.IO event name
+
+### Turntable Power (Matter smart plug)
+
+The turntable's power outlet is a Matter smart plug commissioned onto BabelPod's own fabric (multi-admin — it stays paired with Apple Home). Configured via `turntablePlugEnabled`/`turntablePlugPairingCode` in `babelpod.config.json`; credentials persist in `.matter-storage/`. The OnOff attribute subscription drives every `turntablePower` broadcast (never synthesized from commands), so clients always see real hardware state. Silence auto-off (`autoOffEnabled`, threshold in dBFS, duration in minutes) taps the same RMS pipeline as autoconnect and cuts the plug after sustained silence; it is a privileged automation path that bypasses the session-owner lock without changing ownership. See `API.md` § "Turntable Power & Silence Auto-Off".
 
 ### Device Discovery
 

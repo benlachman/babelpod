@@ -28,9 +28,19 @@ The Burr-Brown/TI USB Audio CODEC has no ALSA capture volume control — gain is
 - Add an input gain slider to the UI (web + SwiftUI)
 - Consider adding a signal level meter to the UI so users can visually confirm input levels
 
+## Remaining items from the AirSpin server spec (v1.1)
+
+`airspin/docs/babelpod-server-spec.md` (branch `claude/turntable-homekit-volume-LXDRd`) specifies four features. Turntable power (§0/§3: Matter plug + silence auto-off + `turntablePower` events) is implemented. Still open:
+
+- **Per-output volume (§1):** `setOutputVolume {id, value}` / `outputVolume` broadcasts, per-output `volume` field on every output in `state`/`outputs` (capability by presence — must be on *every* output once implemented), `setVolume` becomes "set all", persistence across restarts. `node_airtunes2` already supports per-device volume. AirSpin client side is already implemented.
+- **HTTP command endpoint (§4):** `POST /api/setVolume|setOutputVolume|setTurntablePower` + `GET /api/state` with a shared-secret token, for AirSpin App Intents / Siri Shortcuts. Privileged (bypasses session owner), routes through the same control core, LAN only.
+- **HomeKit volume accessory (§5):** HAP-NodeJS Lightbulb whose `Brightness` maps to volume (the only Siri-controllable numeric), two-way sync, per-output Lightbulbs once §1 lands.
+
 ## iOS App: Push Notification to Turn Off Record Player
 
 When autoconnect transitions from silence to idle (speakers released after 5 minutes of silence), send a push notification from the iOS app reminding the user to turn off the record player. The record is still spinning in the runout groove — the user may have walked away.
+
+*Partially superseded:* the server can now power the turntable off itself after sustained silence via the Matter smart plug (`autoOffEnabled`). A notification remains useful for setups without a smart plug, or as a heads-up that auto-off happened.
 
 Should be gated by a toggle in settings (off by default). Requires the server to emit the silence→idle transition event.
 
