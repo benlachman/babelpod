@@ -179,4 +179,69 @@ describe('MatterPlugController state tracking', () => {
     const controller = new MatterPlugController({ storagePath: '/tmp/unused' });
     await expect(controller.setPower(true)).rejects.toThrow('not connected');
   });
+
+  test('strips dashes from Apple Home pairing codes', () => {
+    const controller = new MatterPlugController({ pairingCode: '1406-013-3112', storagePath: '/tmp/unused' });
+    expect(controller.pairingCode).toBe('14060133112');
+  });
+});
+
+describe('MatterPlugController endpoint discovery', () => {
+  // Fake matter.js node: parts list mutable, structureChanged observable
+  function createFakeNode(parts = []) {
+    const listeners = new Set();
+    return {
+      parts,
+      events: {
+        structureChanged: {
+          on: fn => listeners.add(fn),
+          off: fn => listeners.delete(fn)
+        }
+      },
+      fireStructureChanged() { listeners.forEach(fn => fn()); },
+      listenerCount: () => listeners.size
+    };
+  }
+
+  function createController(node) {
+    const controller = new MatterPlugController({ storagePath: '/tmp/unused' });
+    controller.node = node;
+    controller.OnOffClient = class FakeOnOffClient {};
+    return controller;
+  }
+
+  const onOffEndpoint = { stateOf: () => ({ onOff: true }) };
+  const otherEndpoint = { stateOf: () => undefined };
+
+  test('resolves when the endpoint appears after a structure change', async () => {
+    const node = createFakeNode([otherEndpoint]);
+    const controller = createController(node);
+
+    const pending = controller.waitForOnOffEndpoint(1000);
+    node.parts.push(onOffEndpoint);
+    node.fireStructureChanged();
+
+    await expect(pending).resolves.toBe(onOffEndpoint);
+    expect(node.listenerCount()).toBe(0); // listener cleaned up
+  });
+
+  test('resolves immediately when the endpoint already exists', async () => {
+    const node = createFakeNode([onOffEndpoint]);
+    const controller = createController(node);
+    await expect(controller.waitForOnOffEndpoint(1000)).resolves.toBe(onOffEndpoint);
+  });
+
+  test('rejects after the timeout when no endpoint appears', async () => {
+    const node = createFakeNode([otherEndpoint]);
+    const controller = createController(node);
+    await expect(controller.waitForOnOffEndpoint(50)).rejects.toThrow('timed out waiting for device structure');
+    expect(node.listenerCount()).toBe(0);
+  });
+
+  test('skips endpoints whose stateOf throws', () => {
+    const throwing = { stateOf: () => { throw new Error('unsupported behavior'); } };
+    const node = createFakeNode([throwing, onOffEndpoint]);
+    const controller = createController(node);
+    expect(controller.findOnOffEndpoint()).toBe(onOffEndpoint);
+  });
 });
