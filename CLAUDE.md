@@ -90,6 +90,7 @@ The SwiftUI client lives at `/Users/ben/Development/BabelUI` (separate repo: `ni
 - **Ask before making breaking API changes.** The API has multiple clients (web UI, iOS app). Discuss versioning strategy before changing event names, payload shapes, or removing events.
 - **iOS and web UI must have feature parity.** Any feature added to one client must be added to the other.
 - **Always include PR URLs.** When referencing pull requests, include the full URL so they're clickable.
+- **Always use `--repo benlachman/babelpod` with `gh` commands.** The repo has an `upstream` remote pointing to `afaden/babelpod` (the original fork). Without `--repo`, `gh` may target the fork instead of this repo.
 
 ## Code Style
 
