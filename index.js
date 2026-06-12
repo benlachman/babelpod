@@ -59,7 +59,7 @@ const DEFAULT_CONFIG = {
   // the threshold count as that kind of silence — a line below the noise
   // floor means the turntable itself is already off, and the plug is left on.
   autoOffEnabled: false,
-  autoOffSilenceThresholdDb: -50,
+  autoOffSilenceThresholdDb: -43,
   autoOffNoiseFloorDb: -62,
   autoOffSilenceMinutes: 20
 };

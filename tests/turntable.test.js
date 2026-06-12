@@ -15,7 +15,7 @@ describe('dbfsFromRms', () => {
     expect(dbfsFromRms(0)).toBe(-Infinity);
   });
 
-  test('RMS 0.00316 is about -50 dBFS (the default threshold)', () => {
+  test('RMS 0.00316 is about -50 dBFS', () => {
     expect(dbfsFromRms(0.00316)).toBeCloseTo(-50, 0);
   });
 
