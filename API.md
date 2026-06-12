@@ -173,13 +173,13 @@ Update instance configuration. Partial updates allowed — only fields present a
   "autoconnectEnabled": true,
   "autoconnectThreshold": 0.01,
   "autoOffEnabled": true,
-  "autoOffSilenceThresholdDb": -50,
+  "autoOffSilenceThresholdDb": -43,
   "autoOffNoiseFloorDb": -62,
   "autoOffSilenceMinutes": 20
 }
 ```
 
-The `autoOff*` fields (v1.1) configure silence auto-off for the turntable plug. The plug itself (`turntablePlugEnabled`, `turntablePlugPairingCode`) can only be configured in `babelpod.config.json` on the server, since commissioning is a one-time operator step that requires a server restart.
+The `autoOff*` fields (v1.1) configure silence auto-off for the turntable plug. To calibrate: watch `rmsLevel` (20·log10(level) = dBFS) with the turntable off to find the line's noise floor, and again with a record spinning in the runout groove to find the surface-noise level. Set `autoOffNoiseFloorDb` a few dB above the former and `autoOffSilenceThresholdDb` ~5 dB above the latter — runout noise must land *between* the two or auto-off will never fire (music is far louder, typically −30 dBFS and up, so the threshold has plenty of headroom). The plug itself (`turntablePlugEnabled`, `turntablePlugPairingCode`) can only be configured in `babelpod.config.json` on the server, since commissioning is a one-time operator step that requires a server restart.
 
 ### `setAutoconnect`
 
