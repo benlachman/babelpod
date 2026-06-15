@@ -3,7 +3,7 @@
  * These tests don't require hardware and test pure logic functions
  */
 
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume } = require('../lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume } = require('../lib/devices');
 
 describe('BabelPod Utility Functions', () => {
   describe('parsePcmDevices', () => {
@@ -100,6 +100,43 @@ describe('BabelPod Utility Functions', () => {
     test('handles non-string input safely', () => {
       expect(outputSupportsVolume(undefined)).toBe(false);
       expect(outputSupportsVolume(null)).toBe(false);
+    });
+  });
+
+  describe('averageVolume', () => {
+    test('averages a list, 0 for empty', () => {
+      expect(averageVolume([])).toBe(0);
+      expect(averageVolume([40, 60])).toBe(50);
+      expect(averageVolume([30, 50, 70])).toBe(50);
+    });
+  });
+
+  describe('applyGroupVolume (Apple-style master)', () => {
+    test('equal members behave like "set all"', () => {
+      expect(applyGroupVolume([50, 50], 70)).toEqual([70, 70]);
+    });
+
+    test('preserves the relative balance between speakers', () => {
+      // average 40 → target 60 shifts both up by 20, keeping the 20-point gap
+      expect(applyGroupVolume([30, 50], 60)).toEqual([50, 70]);
+    });
+
+    test('is a no-op when target equals the current average', () => {
+      expect(applyGroupVolume([30, 50], 40)).toEqual([30, 50]);
+    });
+
+    test('clamps members at the rails (offset compresses past 0/100)', () => {
+      expect(applyGroupVolume([30, 50], 0)).toEqual([0, 10]);
+      expect(applyGroupVolume([30, 50], 100)).toEqual([90, 100]);
+    });
+
+    test('rounds to integers', () => {
+      // average 41.67 → target 50 shifts by ~8.33
+      expect(applyGroupVolume([30, 45, 50], 50)).toEqual([38, 53, 58]);
+    });
+
+    test('empty membership yields an empty result', () => {
+      expect(applyGroupVolume([], 50)).toEqual([]);
     });
   });
 

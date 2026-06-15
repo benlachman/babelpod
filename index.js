@@ -19,7 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume } = require('./lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
 
@@ -239,6 +239,14 @@ function activateDefaultOutputs() {
   if (validOutputIds.length > 0) {
     syncOutputs(validOutputIds);
     io.emit('output', { ids: validOutputIds });
+    // Fresh autoconnect brings every speaker up at the default level (overriding
+    // any remembered per-output trims), so the group starts balanced
+    validOutputIds.forEach(uiId => {
+      if (!outputSupportsVolume(uiId)) return;
+      outputVolumes[uiId] = volume;
+      applyOutputVolume(uiId);
+      io.emit('outputVolume', { id: uiId, value: volume });
+    });
     io.emit('volume', { value: volume });
     const missing = config.defaultOutputIds.length - validOutputIds.length;
     const message = missing > 0
@@ -659,6 +667,16 @@ function getOutputVolume(uiId) {
   return Math.round(outputVolumes[uiId] ?? volume);
 }
 
+// The master/group volume is the average of the selected outputs that support
+// per-output volume (Apple's group-volume model). With nothing selected it
+// falls back to the remembered `volume` level (used as the seed for newly
+// selected outputs and reported in state).
+function computeGroupVolume() {
+  const members = selectedOutputs.filter(outputSupportsVolume);
+  if (!members.length) return Math.round(volume);
+  return Math.round(averageVolume(members.map(getOutputVolume)));
+}
+
 // Push an output's stored volume to its underlying AirPlay device(s). Only
 // touches devices currently added to airtunes; the stored value still applies
 // when the output is (re)selected later via syncOutputs.
@@ -722,7 +740,7 @@ function buildStatePayload() {
     outputs: buildCleanOutputs(),
     selectedInput: currentInput,
     selectedOutputs,
-    volume,
+    volume: computeGroupVolume(),
     config,
     autoconnectState: autoconnectState.state
   };
@@ -1171,6 +1189,9 @@ io.on('connection', socket => {
     try {
       syncOutputs(outs);
       io.emit('output', { ids: outs });
+      // Selection changed the group membership — refresh the master (group average)
+      volume = computeGroupVolume();
+      io.emit('volume', { value: volume });
       io.emit('status', { message: `Outputs updated` });
     } catch (e) {
       console.error("Error switching output:", e);
@@ -1185,17 +1206,24 @@ io.on('connection', socket => {
 
     if (socket.id !== sessionOwner) return;
     try {
-      volume = Math.round(clampVolume(vol));
+      const target = Math.round(clampVolume(vol));
+      // Apple-style group volume: shift every selected per-output speaker by the
+      // delta needed to move the group average to `target`, preserving the
+      // relative balance between speakers (rather than flattening them all to
+      // the same number). Each shifted speaker broadcasts its new outputVolume.
+      const members = selectedOutputs.filter(outputSupportsVolume);
+      if (members.length) {
+        const shifted = applyGroupVolume(members.map(getOutputVolume), target);
+        members.forEach((uiId, i) => {
+          outputVolumes[uiId] = shifted[i];
+          applyOutputVolume(uiId);
+          io.emit('outputVolume', { id: uiId, value: shifted[i] });
+        });
+        volume = computeGroupVolume(); // true group average after any rail clamping
+      } else {
+        volume = target; // no per-output speakers — just remember the level
+      }
       io.emit('volume', { value: volume });
-      // "Set all": master volume applies to every selected output's per-output
-      // volume, updating each stored value and broadcasting it so per-speaker
-      // sliders stay in sync. Per-output volume is the authoritative device gain.
-      selectedOutputs.forEach(uiId => {
-        if (!outputSupportsVolume(uiId)) return;
-        outputVolumes[uiId] = volume;
-        applyOutputVolume(uiId);
-        io.emit('outputVolume', { id: uiId, value: volume });
-      });
     } catch (e) {
       console.error("Error changing volume:", e);
       io.emit('serverError', { message: `Failed to change volume: ${e.message}` });
@@ -1216,6 +1244,11 @@ io.on('connection', socket => {
       outputVolumes[id] = value;
       applyOutputVolume(id);
       io.emit('outputVolume', { id, value });
+      // Changing one speaker moves the group average — keep master in sync
+      if (selectedOutputs.includes(id)) {
+        volume = computeGroupVolume();
+        io.emit('volume', { value: volume });
+      }
     } catch (e) {
       console.error("Error changing output volume:", e);
       io.emit('serverError', { message: `Failed to change output volume: ${e.message}` });

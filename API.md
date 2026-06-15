@@ -148,7 +148,7 @@ Output ID prefixes:
 
 ### `setVolume`
 
-Set the master volume (0-100). Requires session ownership. Acts as "set all": applies the value to every currently selected AirPlay output's per-output volume, emitting `volume` plus one `outputVolume` per affected output.
+Set the master (group) volume (0-100). Requires session ownership. Follows Apple's group-volume model: the master is the *average* of the selected speakers, and changing it shifts every selected speaker by the same delta, **preserving the relative balance** between them (rather than flattening them to one number). Emits `volume` plus one `outputVolume` per affected speaker. See [Per-Output Volume](#per-output-volume-v11).
 
 ```json
 { "value": 75 }
@@ -281,8 +281,9 @@ Each output can carry its own volume independent of the master. The contract is 
 
 - **Capability by presence.** Every output object in `state.outputs` and the `outputs` event may include an optional integer `volume` (0–100). Clients enable per-speaker control based on the *presence* of this field on any output; a server without the feature omits it entirely and clients fall back to the single master slider.
 - **Which outputs support it.** Only AirPlay outputs (`air:` / `airpair:`) have a software gain knob (via `node_airtunes2` per-device volume), so only they carry `volume`. Local ALSA (`plughw:`) outputs are piped raw to `aplay` with no gain control and omit the field.
-- **Per-output volume is the authoritative device gain** (an absolute 0–100 level, not a trim). The master `volume` / `setVolume` is a "set all" convenience: it overwrites every selected output's per-output volume and emits an `outputVolume` for each. A newly selected output starts at the current master volume.
-- **Events:** `setOutputVolume {id, value}` (client→server, owner-only, clamped/rounded, unknown ids ignored) → applies the gain and broadcasts `outputVolume {id, value}` to all clients.
+- **Per-output volume is the authoritative device gain** (an absolute 0–100 level). `setOutputVolume {id, value}` sets one speaker directly.
+- **Master volume follows Apple's group model.** `state.volume` is the *average* of the selected speakers' per-output volumes. `setVolume` shifts every selected speaker by the same delta to reach the requested average, **preserving their relative balance** — so a speaker you set quieter stays proportionally quieter (60 on a stereo pair and 45 on a mini hold their offset when you move the group). When all speakers are equal this is identical to "set all"; balance is only preserved once you've trimmed speakers apart. At the 0/100 rails a clamped speaker's offset compresses (the additive model can't preserve an offset past a rail). Changing one speaker via `setOutputVolume` likewise re-broadcasts `volume` with the new average, and a newly selected speaker joins at the current group level.
+- **Events:** `setOutputVolume {id, value}` (client→server, owner-only, clamped/rounded, unknown ids ignored) → applies the gain and broadcasts `outputVolume {id, value}` to all clients. `setVolume` broadcasts `volume` plus one `outputVolume` per shifted speaker.
 - **Persistence.** Per-output volumes are runtime state, like the master `volume` — they survive reconnects (re-read from `state`) but reset on server restart. (This is deliberate: persisting every slider movement to `babelpod.config.json` would hammer the Pi's SD card. The master volume behaves the same way.)
 
 ## Turntable Power & Silence Auto-Off (v1.1)
