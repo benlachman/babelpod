@@ -221,12 +221,15 @@ BabelPod stores instance configuration in `babelpod.config.json` alongside the s
 {
   "displayName": "PattyPi",
   "defaultInputId": "plughw:0,0",
-  "defaultOutputIds": ["air:Kitchen"],
+  "defaultOutputIds": ["air:Kitchen", "airpair:Living Room"],
   "defaultVolume": 50,
+  "defaultOutputVolumes": { "air:Kitchen": 65, "airpair:Living Room": 40 },
   "autoconnectEnabled": true,
   "autoconnectThreshold": 0.01
 }
 ```
+
+`defaultOutputVolumes` (v1.1) is a per-speaker default volume map (`{ outputId: 0–100 }`). When autoconnect brings up the default outputs, each speaker comes up at its own level here, falling back to `defaultVolume` for any default speaker without an entry — so the default setup keeps its balance instead of all speakers starting at one number. AirPlay outputs only; the server clamps/rounds values and drops malformed entries on save. Settable via `setConfig` (the web UI Settings shows a slider per default speaker).
 
 ## Autoconnect
 
@@ -284,7 +287,7 @@ Each output can carry its own volume independent of the master. The contract is 
 - **Per-output volume is the authoritative device gain** (an absolute 0–100 level). `setOutputVolume {id, value}` sets one speaker directly.
 - **Master volume follows Apple's group model.** `state.volume` is the *average* of the selected speakers' per-output volumes. `setVolume` shifts every selected speaker by the same delta to reach the requested average, **preserving their relative balance** — so a speaker you set quieter stays proportionally quieter (60 on a stereo pair and 45 on a mini hold their offset when you move the group). When all speakers are equal this is identical to "set all"; balance is only preserved once you've trimmed speakers apart. At the 0/100 rails a clamped speaker's offset compresses (the additive model can't preserve an offset past a rail). Changing one speaker via `setOutputVolume` likewise re-broadcasts `volume` with the new average, and a newly selected speaker joins at the current group level.
 - **Events:** `setOutputVolume {id, value}` (client→server, owner-only, clamped/rounded, unknown ids ignored) → applies the gain and broadcasts `outputVolume {id, value}` to all clients. `setVolume` broadcasts `volume` plus one `outputVolume` per shifted speaker.
-- **Persistence.** Per-output volumes are runtime state, like the master `volume` — they survive reconnects (re-read from `state`) but reset on server restart. (This is deliberate: persisting every slider movement to `babelpod.config.json` would hammer the Pi's SD card. The master volume behaves the same way.)
+- **Persistence.** Live per-output volumes are runtime state, like the master `volume` — they survive reconnects (re-read from `state`) but reset on server restart. (This is deliberate: persisting every slider movement to `babelpod.config.json` would hammer the Pi's SD card.) For a setup that should *start* balanced, configure `defaultOutputVolumes` (see [Instance Configuration](#instance-configuration)) — those per-speaker defaults are saved to config and applied each time autoconnect brings the default speakers up.
 
 ## Turntable Power & Silence Auto-Off (v1.1)
 

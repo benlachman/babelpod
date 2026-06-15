@@ -3,7 +3,7 @@
  * These tests don't require hardware and test pure logic functions
  */
 
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume } = require('../lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('../lib/devices');
 
 describe('BabelPod Utility Functions', () => {
   describe('parsePcmDevices', () => {
@@ -137,6 +137,25 @@ describe('BabelPod Utility Functions', () => {
 
     test('empty membership yields an empty result', () => {
       expect(applyGroupVolume([], 50)).toEqual([]);
+    });
+  });
+
+  describe('sanitizeDefaultOutputVolumes', () => {
+    test('clamps and rounds numeric values', () => {
+      expect(sanitizeDefaultOutputVolumes({ 'air:Kitchen': 150, 'airpair:LR': -5, 'air:X': 40.6 }))
+        .toEqual({ 'air:Kitchen': 100, 'airpair:LR': 0, 'air:X': 41 });
+    });
+
+    test('drops non-numeric and non-finite values', () => {
+      expect(sanitizeDefaultOutputVolumes({ 'air:K': 'loud', 'air:Z': NaN, 'air:Y': 30 }))
+        .toEqual({ 'air:Y': 30 });
+    });
+
+    test('returns an empty object for non-object input', () => {
+      expect(sanitizeDefaultOutputVolumes(null)).toEqual({});
+      expect(sanitizeDefaultOutputVolumes(undefined)).toEqual({});
+      expect(sanitizeDefaultOutputVolumes([1, 2])).toEqual({});
+      expect(sanitizeDefaultOutputVolumes('x')).toEqual({});
     });
   });
 

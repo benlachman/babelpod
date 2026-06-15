@@ -881,8 +881,11 @@
           defaultInputSelect.appendChild(opt);
         });
 
-        // Populate default outputs checkboxes
+        // Populate default outputs checkboxes (with a per-speaker default
+        // volume slider for outputs that support per-output volume)
         const defaultOutputsDiv = document.getElementById("settingsDefaultOutputs");
+        const defaultVolumes = currentConfig.defaultOutputVolumes || {};
+        const fallbackVolume = currentConfig.defaultVolume || 50;
         while (defaultOutputsDiv.firstChild) defaultOutputsDiv.removeChild(defaultOutputsDiv.firstChild);
         availableOutputsList.forEach((output) => {
           const label = document.createElement("label");
@@ -892,6 +895,27 @@
           checkbox.checked = (currentConfig.defaultOutputIds || []).includes(output.id);
           label.appendChild(checkbox);
           label.appendChild(document.createTextNode(output.name));
+
+          // Per-speaker default volume — only for outputs that report a volume
+          if (typeof output.volume === "number") {
+            label.style.flexWrap = "wrap";
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.min = "0";
+            slider.max = "100";
+            slider.value = defaultVolumes[output.id] ?? fallbackVolume;
+            slider.className = "settings-default-volume";
+            slider.dataset.outputId = output.id;
+            slider.style.flex = "1 1 100%";
+            slider.style.marginTop = "0.4rem";
+            slider.style.setProperty("--progress", slider.value + "%");
+            slider.addEventListener("click", (e) => e.stopPropagation());
+            slider.addEventListener("pointerdown", (e) => e.stopPropagation());
+            slider.addEventListener("input", (ev) => {
+              ev.target.style.setProperty("--progress", ev.target.value + "%");
+            });
+            label.appendChild(slider);
+          }
           defaultOutputsDiv.appendChild(label);
         });
       }
@@ -912,6 +936,14 @@
         defaultOutputCheckboxes.forEach((cb) => {
           if (cb.checked) selectedDefaultOutputs.push(cb.value);
         });
+
+        // Collect per-speaker default volumes from their sliders
+        const defaultOutputVolumes = {};
+        document.getElementById("settingsDefaultOutputs")
+          .querySelectorAll("input.settings-default-volume")
+          .forEach((slider) => {
+            defaultOutputVolumes[slider.dataset.outputId] = Number(slider.value);
+          });
 
         const inputMode = document.getElementById("settingsInputMode").value;
         // Phono mode: signal amplified by preamp (~0.03+ music), higher threshold
@@ -939,6 +971,7 @@
           defaultInputId: document.getElementById("settingsDefaultInput").value,
           defaultOutputIds: selectedDefaultOutputs,
           defaultVolume: Number(document.getElementById("settingsDefaultVolume").value),
+          defaultOutputVolumes: defaultOutputVolumes,
           autoconnectEnabled: document.getElementById("settingsAutoconnectEnabled").checked,
           autoconnectThreshold: autoconnectThreshold
         });

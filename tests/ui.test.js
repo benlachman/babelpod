@@ -107,3 +107,25 @@ describe('Web UI — per-output volume', () => {
     expect(document.querySelectorAll('#outputsList input.output-volume').length).toBe(0);
   });
 });
+
+describe('Web UI — per-speaker default volumes (settings)', () => {
+  test('settings shows a default-volume slider per capable output, seeded from config', () => {
+    loadUi();
+    fire('state', {
+      ...baseState,
+      config: { defaultVolume: 55, defaultOutputVolumes: { 'air:Kitchen': 30 } },
+      outputs: [
+        { id: 'air:Kitchen', name: 'Kitchen - AirPlay', volume: 50 },
+        { id: 'air:Office', name: 'Office - AirPlay', volume: 50 }, // no explicit default → fallback
+        { id: 'plughw:0,0', name: 'Headphones - Output' },          // no volume → no slider
+      ],
+    });
+
+    const sliders = document.querySelectorAll('#settingsDefaultOutputs input.settings-default-volume');
+    expect(sliders.length).toBe(2);
+    const byId = {};
+    sliders.forEach((s) => { byId[s.dataset.outputId] = s.value; });
+    expect(byId['air:Kitchen']).toBe('30');  // from config.defaultOutputVolumes
+    expect(byId['air:Office']).toBe('55');    // falls back to defaultVolume
+  });
+});

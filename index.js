@@ -19,7 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume } = require('./lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
 
@@ -47,6 +47,10 @@ const DEFAULT_CONFIG = {
   defaultInputId: null,
   defaultOutputIds: [],
   defaultVolume: 50,
+  // Per-default-speaker volumes ({ outputId: 0-100 }). When autoconnect brings
+  // up the default speakers, each comes up at its own level here (falling back
+  // to defaultVolume), so the default setup keeps its balance. AirPlay only.
+  defaultOutputVolumes: {},
   autoconnectEnabled: false,
   autoconnectThreshold: 0.01,
   // Turntable smart plug (Matter). Commission once by putting the plug in
@@ -239,14 +243,19 @@ function activateDefaultOutputs() {
   if (validOutputIds.length > 0) {
     syncOutputs(validOutputIds);
     io.emit('output', { ids: validOutputIds });
-    // Fresh autoconnect brings every speaker up at the default level (overriding
-    // any remembered per-output trims), so the group starts balanced
+    // Fresh autoconnect brings each speaker up at its configured default level
+    // (per-speaker default, falling back to defaultVolume) so the default setup
+    // keeps its balance rather than flattening everyone to one number.
+    const defaultVolumes = config.defaultOutputVolumes || {};
     validOutputIds.forEach(uiId => {
       if (!outputSupportsVolume(uiId)) return;
-      outputVolumes[uiId] = volume;
+      const level = defaultVolumes[uiId] ?? volume;
+      outputVolumes[uiId] = level;
       applyOutputVolume(uiId);
-      io.emit('outputVolume', { id: uiId, value: volume });
+      io.emit('outputVolume', { id: uiId, value: level });
     });
+    // Master reflects the resulting group average (speakers may differ now)
+    volume = computeGroupVolume();
     io.emit('volume', { value: volume });
     const missing = config.defaultOutputIds.length - validOutputIds.length;
     const message = missing > 0
@@ -1264,13 +1273,17 @@ io.on('connection', socket => {
 
     // Only allow known fields
     const allowedFields = [
-      'displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume',
+      'displayName', 'defaultInputId', 'defaultOutputIds', 'defaultVolume', 'defaultOutputVolumes',
       'autoconnectEnabled', 'autoconnectThreshold',
       'autoOffEnabled', 'autoOffSilenceThresholdDb', 'autoOffNoiseFloorDb', 'autoOffSilenceMinutes'
     ];
     const filtered = {};
     for (const key of allowedFields) {
       if (key in data) filtered[key] = data[key];
+    }
+    // Sanitize the per-default-speaker volume map (clamp/round, drop malformed)
+    if ('defaultOutputVolumes' in filtered) {
+      filtered.defaultOutputVolumes = sanitizeDefaultOutputVolumes(filtered.defaultOutputVolumes);
     }
 
     saveConfig(filtered);
