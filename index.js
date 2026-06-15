@@ -1113,7 +1113,8 @@ function syncOutputs(newSelected) {
                 airtunes.add(device.host, {
                   port: device.port,
                   volume: outputVolume,
-                  stereo: !!device.isStereo
+                  stereo: !!device.isStereo,
+                  name: config.displayName // shown in AirPlay receiver prompts (e.g. macOS)
                 });
                 // Track active AirPlay devices
                 if (!activeAirPlayDevices.includes(deviceKey)) {
