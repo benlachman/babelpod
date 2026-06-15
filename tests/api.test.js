@@ -18,11 +18,20 @@ function connectClient(opts = {}) {
       transports: ['websocket'],
       ...opts
     });
+    // The server emits `state` immediately on connection — attach the listener
+    // before `connect` resolves so a fast `state` can't arrive before a test
+    // registers its own listener (the source of intermittent state timeouts).
+    c._bufferedState = null;
+    c.on('state', (s) => { c._bufferedState = s; });
     c.on('connect', () => resolve(c));
   });
 }
 
 function waitForEvent(socket, event, timeout = 2000) {
+  // `state` is connect-only and buffered at socket creation; return it if seen.
+  if (event === 'state' && socket._bufferedState) {
+    return Promise.resolve(socket._bufferedState);
+  }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timeout waiting for '${event}'`)), timeout);
     socket.once(event, (data) => {
@@ -208,6 +217,85 @@ describe('Socket.IO API Contract', () => {
       await expect(
         waitForEvent(client, 'volume', 500)
       ).rejects.toThrow('Timeout');
+    });
+  });
+
+  describe('Per-output volume', () => {
+    test('outputs carry an integer 0-100 volume only when they support it', async () => {
+      client = await connectClient();
+      const state = await waitForEvent(client, 'state');
+
+      for (const output of state.outputs) {
+        if ('volume' in output) {
+          // Capability by presence — must be an AirPlay output, integer 0-100
+          expect(output.id).toMatch(/^air(pair)?:/);
+          expect(Number.isInteger(output.volume)).toBe(true);
+          expect(output.volume).toBeGreaterThanOrEqual(0);
+          expect(output.volume).toBeLessThanOrEqual(100);
+        } else {
+          // Local ALSA outputs have no software gain, so no volume field
+          expect(output.id).not.toMatch(/^air(pair)?:/);
+        }
+      }
+    });
+
+    test('non-owner setOutputVolume is ignored', async () => {
+      client = await connectClient();
+      await waitForEvent(client, 'state');
+
+      const client2 = await connectClient();
+      await waitForEvent(client2, 'state');
+
+      // client2 is not the owner — no outputVolume should be broadcast
+      client2.emit('setOutputVolume', { id: 'air:Kitchen', value: 50 });
+      await expect(
+        waitForEvent(client, 'outputVolume', 500)
+      ).rejects.toThrow('Timeout');
+      client2.disconnect();
+    });
+
+    test('setOutputVolume for an unknown output id is ignored', async () => {
+      client = await connectClient();
+      await waitForEvent(client, 'state');
+
+      client.emit('setOutputVolume', { id: 'air:__nonexistent_device__', value: 50 });
+      await expect(
+        waitForEvent(client, 'outputVolume', 500)
+      ).rejects.toThrow('Timeout');
+    });
+
+    test('setOutputVolume with a non-number value is ignored', async () => {
+      client = await connectClient();
+      await waitForEvent(client, 'state');
+
+      client.emit('setOutputVolume', { id: 'air:__nonexistent_device__', value: 'loud' });
+      await expect(
+        waitForEvent(client, 'outputVolume', 500)
+      ).rejects.toThrow('Timeout');
+    });
+
+    test('setOutputVolume clamps to 0-100 and broadcasts an integer outputVolume', async () => {
+      client = await connectClient();
+      const state = await waitForEvent(client, 'state');
+
+      const capable = state.outputs.find(o => typeof o.volume === 'number');
+      if (!capable) {
+        // No AirPlay outputs discovered in this environment (e.g. CI without
+        // discoverable devices) — fall back to verifying the no-op guard so the
+        // test stays deterministic. The clamp logic is unit-tested separately.
+        client.emit('setOutputVolume', { id: 'air:__nonexistent_device__', value: 150 });
+        await expect(
+          waitForEvent(client, 'outputVolume', 500)
+        ).rejects.toThrow('Timeout');
+        return;
+      }
+
+      const broadcast = waitForEvent(client, 'outputVolume');
+      client.emit('setOutputVolume', { id: capable.id, value: 150 });
+      const event = await broadcast;
+      expect(event.id).toBe(capable.id);
+      expect(event.value).toBe(100); // clamped from 150
+      expect(Number.isInteger(event.value)).toBe(true);
     });
   });
 

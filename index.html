@@ -414,6 +414,10 @@
       let lastEmittedVolume = null;
       let lastEmittedOutputs = null;
       let lastEmittedInput = null;
+      // Per-output volume echo/drag tracking, keyed by output id
+      let lastEmittedOutputVolume = {};
+      let outputVolumeDragging = {};
+      let outputVolumeTimeouts = {};
       let currentConfig = {};
       let currentAutoconnectState = "paused";
       let availableOutputsList = [];
@@ -500,6 +504,7 @@
         lastEmittedVolume = null;
         lastEmittedOutputs = null;
         lastEmittedInput = null;
+        lastEmittedOutputVolume = {};
         socket.emit("takeover");
       });
 
@@ -548,8 +553,47 @@
           c.addEventListener("change", onOutputCheckChange);
           lb.appendChild(c);
           lb.appendChild(document.createTextNode(o.name));
+
+          // Per-output volume slider — shown only for outputs the server
+          // reports a `volume` for (per-output volume capability by presence)
+          if (typeof o.volume === "number") {
+            lb.style.flexWrap = "wrap";
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.min = "0";
+            slider.max = "100";
+            slider.value = o.volume;
+            slider.className = "output-volume";
+            slider.dataset.outputId = o.id;
+            slider.style.flex = "1 1 100%";
+            slider.style.marginTop = "0.4rem";
+            slider.style.setProperty("--progress", o.volume + "%");
+            // Keep slider interaction from toggling the row's checkbox
+            slider.addEventListener("click", (e) => e.stopPropagation());
+            slider.addEventListener("pointerdown", (e) => { e.stopPropagation(); outputVolumeDragging[o.id] = true; });
+            const endDrag = () => { outputVolumeDragging[o.id] = false; };
+            slider.addEventListener("pointerup", endDrag);
+            slider.addEventListener("pointercancel", endDrag);
+            slider.addEventListener("pointerleave", endDrag);
+            slider.addEventListener("input", (ev) => onOutputVolumeInput(o.id, ev.target));
+            lb.appendChild(slider);
+          }
           outputsListDiv.appendChild(lb);
         });
+      }
+
+      function onOutputVolumeInput(id, slider) {
+        const value = Number(slider.value);
+        slider.style.setProperty("--progress", value + "%");
+        lastEmittedOutputVolume[id] = value;
+        // Keep local model in sync so an outputs re-render preserves the value
+        const o = availableOutputsList.find((output) => output.id === id);
+        if (o) o.volume = value;
+        // Debounce per output to avoid flooding the server while dragging
+        if (outputVolumeTimeouts[id]) clearTimeout(outputVolumeTimeouts[id]);
+        outputVolumeTimeouts[id] = setTimeout(() => {
+          socket.emit("setOutputVolume", { id, value });
+        }, 100);
       }
 
       // Socket events — API v1
@@ -624,12 +668,27 @@
           updateSliderProgress();
         }
       });
+      socket.on("outputVolume", (d) => {
+        // Keep the local model current even while dragging / for our own echo
+        const o = availableOutputsList.find((output) => output.id === d.id);
+        if (o) o.volume = d.value;
+        if (outputVolumeDragging[d.id]) return;              // user is dragging this one
+        if (lastEmittedOutputVolume[d.id] === d.value) return; // our own echo
+        const slider = outputsListDiv.querySelector(
+          `input.output-volume[data-output-id="${CSS.escape(d.id)}"]`
+        );
+        if (slider) {
+          slider.value = d.value;
+          slider.style.setProperty("--progress", d.value + "%");
+        }
+      });
       socket.on("session", (d) => {
         isOwner = (socket.id === d.owner);
         // Reset echo tracking on ownership change to fully sync from server
         lastEmittedVolume = null;
         lastEmittedOutputs = null;
         lastEmittedInput = null;
+        lastEmittedOutputVolume = {};
         updateOverlay();
       });
       socket.on("status", (d) => { showStatus(d.message); });
@@ -649,6 +708,7 @@
         lastEmittedVolume = null;
         lastEmittedOutputs = null;
         lastEmittedInput = null;
+        lastEmittedOutputVolume = {};
         showStatus("Connected to BabelPod server");
       });
       socket.on("disconnect", () => {

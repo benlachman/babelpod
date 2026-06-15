@@ -3,7 +3,7 @@
  * These tests don't require hardware and test pure logic functions
  */
 
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume } = require('../lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume } = require('../lib/devices');
 
 describe('BabelPod Utility Functions', () => {
   describe('parsePcmDevices', () => {
@@ -75,6 +75,31 @@ describe('BabelPod Utility Functions', () => {
       expect(clampVolume(150)).toBe(100);
       expect(clampVolume(-10)).toBe(0);
       expect(clampVolume(42)).toBe(42);
+    });
+
+    test('rounds to an integer when paired with Math.round (per-output volume contract)', () => {
+      // Clients parse per-output volume as Int 0-100, so the server rounds
+      expect(Math.round(clampVolume(150))).toBe(100);
+      expect(Math.round(clampVolume(-10))).toBe(0);
+      expect(Math.round(clampVolume(42.6))).toBe(43);
+      expect(Math.round(clampVolume(42.4))).toBe(42);
+    });
+  });
+
+  describe('outputSupportsVolume', () => {
+    test('AirPlay single and stereo-pair outputs support per-output volume', () => {
+      expect(outputSupportsVolume('air:Kitchen')).toBe(true);
+      expect(outputSupportsVolume('airpair:Living Room')).toBe(true);
+    });
+
+    test('local ALSA outputs and void do not', () => {
+      expect(outputSupportsVolume('plughw:0,0')).toBe(false);
+      expect(outputSupportsVolume('void')).toBe(false);
+    });
+
+    test('handles non-string input safely', () => {
+      expect(outputSupportsVolume(undefined)).toBe(false);
+      expect(outputSupportsVolume(null)).toBe(false);
     });
   });
 
