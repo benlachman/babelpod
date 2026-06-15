@@ -1,5 +1,9 @@
 # Backlog
 
+## Test turntable plug commissioning from scratch (real hardware)
+
+In-app plug setup (`setupTurntablePlug`, PR #26) is deployed, but only the **boot-reconnect** path (`init`→`connect` to the already-commissioned plug) and the runtime-engagement of matter.js (commissioning begins, fails cleanly on a bad code) have been verified on hardware. A **full from-scratch commission via the in-app flow has not been exercised on a real plug** — doing so requires decommissioning the current plug (stop service, clear `.matter-storage/`, then commission a fresh plug in pairing mode through the web UI Settings form). Verify this end-to-end before relying on the in-app path to onboard a new plug.
+
 ## iOS App: First-Interaction Gesture Delay
 
 The first tap on interactive controls (Toggle switches, Menu items) after the app connects to the server has a ~2-4 second delay before the action fires. Subsequent taps respond instantly. The console logs `Gesture: System gesture gate timed out.` when the delayed action finally resolves.
