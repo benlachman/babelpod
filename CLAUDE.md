@@ -9,7 +9,7 @@ BabelPod is an audio streaming system with two repositories:
 - **This repo** (`benlachman/babelpod`) — Node.js server + web UI. The server (`index.js`) captures audio from a selected input and streams it to multiple outputs. The web UI (`index.html`) is served by Express. Both are plain JavaScript, no build step.
 - **iOS/macOS app** (`nicemohawk/airspin`) at `/Users/ben/Development/BabelUI` — SwiftUI client that connects to the same server. Separate repo, separate release cycle, but must maintain API parity.
 
-The server runs on a **Raspberry Pi Zero 2 W** (ARM64, 512MB RAM, Debian/Trixie). Audio capture and playback use ALSA tools (`arecord`, `aplay`) via spawned child processes. AirPlay streaming uses `node_airtunes2`. Bluetooth input uses `bluetoothctl` via a Node wrapper. Device discovery uses `dnssd2` (mDNS) and `mdns-js`.
+The server runs on a **Raspberry Pi Zero 2 W** (ARM64, 512MB RAM, Debian/Trixie). Audio capture and playback use ALSA tools (`arecord`, `aplay`) via spawned child processes. AirPlay streaming uses `node_airtunes2` — pinned to our fork (`benlachman/node_airtunes2#babelpod-sender-name`, branched from `ciderapp`'s `v2.4.9`) which adds a `name` option to `add()` so the AirPlay receiver prompt shows the server's display name; BabelPod passes `config.displayName`. Bluetooth input uses `bluetoothctl` via a Node wrapper. Device discovery uses `dnssd2` (mDNS) and `mdns-js`.
 
 ## Commands
 
