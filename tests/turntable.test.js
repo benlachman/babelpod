@@ -247,9 +247,16 @@ describe('MatterPlugController state tracking', () => {
     await expect(controller.setPower(true)).rejects.toThrow('not connected');
   });
 
-  test('strips dashes from Apple Home pairing codes', () => {
-    const controller = new MatterPlugController({ pairingCode: '1406-013-3112', storagePath: '/tmp/unused' });
-    expect(controller.pairingCode).toBe('14060133112');
+  test('normalizes Apple Home pairing codes to digits', () => {
+    expect(MatterPlugController.normalizePairingCode('1406-013-3112')).toBe('14060133112');
+    expect(MatterPlugController.normalizePairingCode('14060133112')).toBe('14060133112');
+    expect(MatterPlugController.normalizePairingCode(null)).toBe('');
+    expect(MatterPlugController.normalizePairingCode('')).toBe('');
+  });
+
+  test('isCommissioned is false before init', () => {
+    const controller = new MatterPlugController({ storagePath: '/tmp/unused' });
+    expect(controller.isCommissioned()).toBe(false);
   });
 });
 

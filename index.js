@@ -104,7 +104,14 @@ function saveConfig(partial) {
   } catch (error) {
     console.error("Error saving config:", error.message);
   }
-  io.emit('config', config);
+  io.emit('config', publicConfig());
+}
+
+// Config as broadcast to clients — omits the Matter pairing code, which is a
+// setup secret and never needs to leave the server.
+function publicConfig() {
+  const { turntablePlugPairingCode, ...rest } = config;
+  return rest;
 }
 
 loadConfig();
@@ -429,6 +436,13 @@ wireRmsMonitor();
 // each one is broadcast to all clients as `turntablePower`.
 let plugController = null;
 
+// A plug is usable only once it's commissioned onto our fabric. Capability
+// signaling (state.turntablePower) and all control gate on this, so the power
+// UI stays hidden until a plug is set up.
+function plugIsConfigured() {
+  return !!plugController && plugController.isCommissioned();
+}
+
 const silenceAutoOff = new SilenceAutoOff({
   thresholdDb: config.autoOffSilenceThresholdDb,
   noiseFloorDb: config.autoOffNoiseFloorDb,
@@ -441,7 +455,7 @@ function buildTurntablePowerPayload() {
 }
 
 function broadcastTurntablePower() {
-  if (!plugController) return;
+  if (!plugIsConfigured()) return;
   io.emit('turntablePower', buildTurntablePowerPayload());
 }
 
@@ -453,7 +467,7 @@ function updateAutoOffArming() {
     noiseFloorDb: config.autoOffNoiseFloorDb,
     durationMs: (config.autoOffSilenceMinutes || 20) * 60 * 1000
   });
-  const armed = !!plugController && config.autoOffEnabled &&
+  const armed = plugIsConfigured() && config.autoOffEnabled &&
     currentInput !== 'void' && plugController.isOn;
   silenceAutoOff.setArmed(armed);
 }
@@ -472,7 +486,7 @@ function handleAutoOffTrigger() {
 // from the OnOff subscription, never synthesized from the command, so clients
 // always see the real hardware state (self-correcting on failed commands).
 function applyTurntablePower(on) {
-  if (!plugController) {
+  if (!plugIsConfigured()) {
     io.emit('serverError', { message: 'No turntable plug configured' });
     return;
   }
@@ -488,32 +502,63 @@ function applyTurntablePower(on) {
   });
 }
 
-async function startTurntablePlug() {
-  if (!config.turntablePlugEnabled) return;
-
-  plugController = new MatterPlugController({
-    pairingCode: config.turntablePlugPairingCode,
+// Build (lazily) the plug controller and wire its hardware-state change events.
+function createPlugController() {
+  const controller = new MatterPlugController({
     storagePath: path.join(__dirname, '.matter-storage'),
     log
   });
-
-  plugController.on('change', ({ on, reachable }) => {
+  controller.on('change', ({ on, reachable }) => {
     log.info(`[plug] state changed: on=${on} reachable=${reachable}`);
     if (on) silenceAutoOff.reset(); // power restored — start a fresh silence window
     updateAutoOffArming();
     broadcastTurntablePower();
   });
+  return controller;
+}
 
+// Commission a new plug at runtime from a pairing code (in-app setup). Owner is
+// gated by the caller. Persists only the "configured" flag, never the code.
+async function commissionTurntablePlug(pairingCode) {
+  if (plugIsConfigured()) throw new Error('A turntable plug is already configured');
+  if (!plugController) plugController = createPlugController();
   try {
-    await plugController.start();
+    await plugController.commission(pairingCode);
+    saveConfig({ turntablePlugEnabled: true });
+    log.info(`[plug] commissioned via app: on=${plugController.isOn} reachable=${plugController.isReachable}`);
+    updateAutoOffArming();
+    broadcastTurntablePower();
+  } catch (e) {
+    // Tear down the half-open controller so the setup UI stays available
+    try { await plugController.stop(); } catch (_) { /* best effort */ }
+    plugController = null;
+    throw e;
+  }
+}
+
+// On boot, connect to an already-commissioned plug (credentials persist in
+// .matter-storage). Supports the legacy file-based setup too: if enabled with a
+// pairing code but not yet commissioned, commission from the configured code.
+async function startTurntablePlug() {
+  if (!config.turntablePlugEnabled) return; // no plug → matter.js never loads
+
+  plugController = createPlugController();
+  try {
+    const alreadyCommissioned = await plugController.init();
+    if (alreadyCommissioned) {
+      await plugController.connect();
+    } else if (config.turntablePlugPairingCode) {
+      await plugController.commission(config.turntablePlugPairingCode);
+    } else {
+      log.warn('[plug] enabled but not commissioned and no pairing code — awaiting in-app setup');
+      return;
+    }
     log.info(`[plug] connected: on=${plugController.isOn} reachable=${plugController.isReachable}`);
     updateAutoOffArming();
     broadcastTurntablePower();
   } catch (e) {
-    // Keep the controller so clients see the capability with reachable: false
     console.error("Turntable plug setup failed:", e.message);
     io.emit('serverError', { message: `Turntable plug setup failed: ${e.message}` });
-    broadcastTurntablePower();
   }
 }
 startTurntablePlug();
@@ -750,12 +795,12 @@ function buildStatePayload() {
     selectedInput: currentInput,
     selectedOutputs,
     volume: computeGroupVolume(),
-    config,
+    config: publicConfig(),
     autoconnectState: autoconnectState.state
   };
-  // Capability signaling: present only when a plug is configured — clients
+  // Capability signaling: present only when a plug is commissioned — clients
   // show the turntable power control based on this field's presence
-  if (plugController) {
+  if (plugIsConfigured()) {
     state.turntablePower = buildTurntablePowerPayload();
   }
   return state;
@@ -1303,6 +1348,30 @@ io.on('connection', socket => {
 
     console.log("Setting turntable power:", on);
     applyTurntablePower(on);
+  });
+
+  // In-app plug setup: commission a Matter plug from a pairing code at runtime
+  // (no restart). Owner-gated. On success the `turntablePower` broadcast makes
+  // the power control appear (capability by presence); on failure a serverError
+  // is sent and the plug stays unconfigured.
+  socket.on('setupTurntablePlug', (data) => {
+    if (socket.id !== sessionOwner) return;
+    const pairingCode = typeof data?.pairingCode === 'string' ? data.pairingCode.trim() : '';
+    if (!pairingCode) {
+      io.emit('serverError', { message: 'A pairing code is required' });
+      return;
+    }
+    if (plugIsConfigured()) {
+      io.emit('serverError', { message: 'A turntable plug is already configured' });
+      return;
+    }
+    io.emit('status', { message: 'Commissioning turntable plug… this can take up to a minute' });
+    commissionTurntablePlug(pairingCode)
+      .then(() => io.emit('status', { message: 'Turntable plug commissioned' }))
+      .catch(e => {
+        console.error("Plug commissioning failed:", e.message);
+        io.emit('serverError', { message: `Plug setup failed: ${e.message}` });
+      });
   });
 
   socket.on('setAutoconnect', (data) => {

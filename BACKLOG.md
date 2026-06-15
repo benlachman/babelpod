@@ -35,6 +35,10 @@ The Burr-Brown/TI USB Audio CODEC has no ALSA capture volume control — gain is
 - **HTTP command endpoint (§4):** `POST /api/setVolume|setOutputVolume|setTurntablePower` + `GET /api/state` with a shared-secret token, for AirSpin App Intents / Siri Shortcuts. Privileged (bypasses session owner), routes through the same control core, LAN only.
 - **HomeKit volume accessory (§5):** HAP-NodeJS Lightbulb whose `Brightness` maps to volume (the only Siri-controllable numeric), two-way sync, per-output Lightbulbs once §1 lands.
 
+## iOS App: in-app turntable plug setup parity
+
+The server + web UI support commissioning a Matter plug from the app via `setupTurntablePlug { pairingCode }` (runtime, no restart; see API.md). The power control is hidden until `state.turntablePower` is present (capability by presence), and config now redacts `turntablePlugPairingCode`. For parity, AirSpin should: show a plug-setup form in settings when `state.turntablePower` is absent (instructions + pairing-code field), emit `setupTurntablePlug`, show a pending state and resolve on the next `turntablePower` broadcast (success) or `serverError` (failure, ~60–75s timeout), and hide the form once configured. No removal needed (single plug, no in-app removal server-side).
+
 ## iOS App: per-speaker default volumes parity
 
 The server + web UI support `defaultOutputVolumes` (per-speaker default volume map applied on autoconnect; see API.md "Instance Configuration"). AirSpin's "save current as defaults" (`BabelPodClientView.swift`, ~line 968) only saves `defaultOutputIds` + a single `defaultVolume`, so saving defaults from iOS loses the per-speaker balance. For parity, AirSpin should read `config.defaultOutputVolumes`, include it when saving defaults (e.g. from the current per-output volumes of the selected speakers), and ideally expose per-speaker default sliders in its settings. Degrades gracefully today — iOS ignores the field and balanced autoconnect still works regardless of which client armed it.

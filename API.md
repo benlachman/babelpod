@@ -172,6 +172,16 @@ Request a turntable plug power change. Requires session ownership. The server do
 
 If the plug is unreachable, the server broadcasts `serverError` plus `turntablePower` with the last known state and `reachable: false`.
 
+### `setupTurntablePlug` (v1.1)
+
+Commission a Matter smart plug at runtime from a manual pairing code (no server restart). Requires session ownership. Ignored if a plug is already configured. The server discovers the plug on the LAN using the code (which encodes a discriminator), commissions it onto BabelPod's fabric, and persists only a "configured" flag — never the code.
+
+```json
+{ "pairingCode": "1406-013-3112" }
+```
+
+Dashes are optional. Flow for clients: emit this, show a pending state (commissioning can take up to ~60s), then resolve on the **first `turntablePower` broadcast** (success — the power control now appears) or a **`serverError`** (failure — stay on the setup form). The server also emits a `status` while commissioning and on success. Only one plug is supported; there is no in-app removal.
+
 ### `takeover`
 
 Claim session ownership. No payload required.
@@ -299,11 +309,11 @@ The turntable can be plugged into a HomeKit-enabled **Matter** smart plug. Babel
 
 ### Setup
 
-1. In Apple Home, open the plug's settings and **Turn On Pairing Mode** to get a fresh setup code (the original code is consumed by Apple Home).
-2. In `babelpod.config.json` set `"turntablePlugEnabled": true` and `"turntablePlugPairingCode": "<code>"`, then restart the server.
-3. Commissioning credentials persist in `.matter-storage/`, so the pairing code is only needed once.
+**In-app (recommended):** open the web UI Settings → Turntable Power Plug. In Apple Home, open the plug's settings and **Turn On Pairing Mode** to get a fresh setup code, enter it, and Set Up. The server commissions the plug live (no restart) via `setupTurntablePlug`; on success the power control appears. Only one plug is supported.
 
-A Wi-Fi Matter plug is reachable directly over IP. A Thread-only plug would additionally require a Thread Border Router on the Pi.
+**File-based (still works):** set `"turntablePlugEnabled": true` and `"turntablePlugPairingCode": "<code>"` in `babelpod.config.json` and restart — the server commissions from the code on boot.
+
+Either way, commissioning credentials persist in `.matter-storage/`, so the code is only needed once; the plug stays paired with Apple Home (multi-admin). The pairing code is a setup secret and is **never broadcast** — it's stripped from the `config` event and `state.config`. A Wi-Fi Matter plug is reachable directly over IP; a Thread-only plug would additionally require a Thread Border Router on the Pi.
 
 ### Ownership and automation
 
