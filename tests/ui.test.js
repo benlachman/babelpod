@@ -108,6 +108,51 @@ describe('Web UI — per-output volume', () => {
   });
 });
 
+describe('Web UI — turntable plug setup (settings)', () => {
+  test('shows the setup form (not the configured status) when no plug is present', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [] }); // no turntablePower in state
+    expect(document.getElementById('plugSetup').style.display).toBe('block');
+    expect(document.getElementById('plugConfigured').style.display).toBe('none');
+  });
+
+  test('shows configured status (not the form) when a plug is present', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [], turntablePower: { on: true, reachable: true } });
+    expect(document.getElementById('plugConfigured').style.display).toBe('block');
+    expect(document.getElementById('plugSetup').style.display).toBe('none');
+    expect(document.getElementById('plugConfiguredDetail').textContent).toContain('on');
+  });
+
+  test('Set Up emits setupTurntablePlug with the entered code', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [] });
+    document.getElementById('plugPairingCode').value = '1406-013-3112';
+    window.setupPlug();
+    const sent = emitted.filter((e) => e.event === 'setupTurntablePlug');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].data).toEqual({ pairingCode: '1406-013-3112' });
+  });
+
+  test('Set Up with an empty code does not emit', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [] });
+    document.getElementById('plugPairingCode').value = '   ';
+    window.setupPlug();
+    expect(emitted.filter((e) => e.event === 'setupTurntablePlug')).toHaveLength(0);
+  });
+
+  test('a turntablePower broadcast after setup flips the section to configured', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [] });
+    document.getElementById('plugPairingCode').value = '14060133112';
+    window.setupPlug();
+    fire('turntablePower', { on: false, reachable: true }); // commissioning succeeded
+    expect(document.getElementById('plugConfigured').style.display).toBe('block');
+    expect(document.getElementById('plugSetup').style.display).toBe('none');
+  });
+});
+
 describe('Web UI — per-speaker default volumes (settings)', () => {
   test('settings shows a default-volume slider per capable output, seeded from config', () => {
     loadUi();

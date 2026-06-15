@@ -378,6 +378,24 @@
           <div class="checkbox-list" id="settingsDefaultOutputs"></div>
 
           <button class="save-button" id="saveSettingsButton" onclick="saveSettings()">Save Settings</button>
+
+          <label style="margin-top: 1.5rem;">Turntable Power Plug</label>
+          <!-- Configured: show status. Not configured: show the setup form. -->
+          <div id="plugConfigured" style="display: none; font-size: 0.9rem; color: #4CAF50;">
+            ✓ Plug configured<span id="plugConfiguredDetail" style="color: #999;"></span>
+          </div>
+          <div id="plugSetup" style="display: none;">
+            <p style="font-size: 0.85rem; color: #999; margin: 0 0 0.5rem;">
+              In Apple Home, open the plug → settings → <strong>Turn On Pairing Mode</strong> to get a
+              setup code, then enter it here. The plug stays in Apple Home.
+            </p>
+            <div style="display: flex; gap: 8px;">
+              <input type="text" id="plugPairingCode" placeholder="XXXX-XXX-XXXX" inputmode="numeric"
+                     autocomplete="off" autocapitalize="off" style="flex: 1;" />
+              <button class="save-button" id="plugSetupButton" style="margin-top: 0;" onclick="setupPlug()">Set Up</button>
+            </div>
+            <p id="plugSetupStatus" style="font-size: 0.8rem; color: #999; margin: 0.5rem 0 0; min-height: 1rem;"></p>
+          </div>
         </div>
       </details>
     </div>
@@ -424,6 +442,8 @@
       let turntablePower = null; // {on, reachable} — null when the server has no plug
       let turntablePowerPending = false;
       let turntablePowerPendingTimeout = null;
+      let plugSetupPending = false;
+      let plugSetupTimeout = null;
 
       const inputsList = document.getElementById("inputsList");
       const volumeRange = document.getElementById("outputVolume");
@@ -610,6 +630,7 @@
         if (s.autoconnectState) currentAutoconnectState = s.autoconnectState;
         turntablePower = s.turntablePower || null;
         renderTurntablePower();
+        renderPlugSettings();
 
         renderInputsList();
         updateInputSelection();
@@ -692,7 +713,18 @@
         updateOverlay();
       });
       socket.on("status", (d) => { showStatus(d.message); });
-      socket.on("serverError", (d) => { showError(d.message); });
+      socket.on("serverError", (d) => {
+        showError(d.message);
+        // If a plug setup attempt was in flight, surface the failure inline
+        if (plugSetupPending) {
+          plugSetupPending = false;
+          if (plugSetupTimeout) clearTimeout(plugSetupTimeout);
+          const status = document.getElementById("plugSetupStatus");
+          if (status) status.textContent = d.message;
+          const btn = document.getElementById("plugSetupButton");
+          if (btn) { btn.disabled = false; btn.textContent = "Set Up"; }
+        }
+      });
 
       // Turntable power — always adopt the broadcast hardware state, never
       // flip the toggle optimistically
@@ -700,7 +732,14 @@
         turntablePower = { on: d.on, reachable: d.reachable };
         turntablePowerPending = false;
         if (turntablePowerPendingTimeout) clearTimeout(turntablePowerPendingTimeout);
+        // A turntablePower broadcast means a plug is now configured — resolve
+        // any pending in-app setup
+        if (plugSetupPending) {
+          plugSetupPending = false;
+          if (plugSetupTimeout) clearTimeout(plugSetupTimeout);
+        }
         renderTurntablePower();
+        renderPlugSettings();
       });
 
       // Connection lifecycle
@@ -806,6 +845,49 @@
             showError("No response from turntable plug");
           }
         }, 8000);
+      }
+
+      // Turntable plug setup (Settings). Configured = turntablePower present.
+      function renderPlugSettings() {
+        const configuredDiv = document.getElementById("plugConfigured");
+        const setupDiv = document.getElementById("plugSetup");
+        if (!configuredDiv || !setupDiv) return;
+        const configured = turntablePower !== null;
+        configuredDiv.style.display = configured ? "block" : "none";
+        setupDiv.style.display = configured ? "none" : "block";
+        if (configured) {
+          const detail = document.getElementById("plugConfiguredDetail");
+          if (detail) {
+            detail.textContent = turntablePower.reachable
+              ? ` — currently ${turntablePower.on ? "on" : "off"}`
+              : " — unreachable";
+          }
+        }
+      }
+
+      function setupPlug() {
+        const input = document.getElementById("plugPairingCode");
+        const status = document.getElementById("plugSetupStatus");
+        const button = document.getElementById("plugSetupButton");
+        const code = (input.value || "").trim();
+        if (!code) { status.textContent = "Enter the pairing code first."; return; }
+
+        socket.emit("setupTurntablePlug", { pairingCode: code });
+        plugSetupPending = true;
+        button.disabled = true;
+        button.textContent = "Setting up…";
+        status.textContent = "Commissioning… this can take up to a minute.";
+
+        // Resolved by the next turntablePower broadcast (success) or serverError
+        if (plugSetupTimeout) clearTimeout(plugSetupTimeout);
+        plugSetupTimeout = setTimeout(() => {
+          if (plugSetupPending) {
+            plugSetupPending = false;
+            button.disabled = false;
+            button.textContent = "Set Up";
+            status.textContent = "No response — check the plug is in pairing mode and try again.";
+          }
+        }, 75000);
       }
 
       // Autoconnect controls
