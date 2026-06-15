@@ -19,7 +19,7 @@ Sent once immediately after connection. Contains the full server state.
   "version": 1,
   "sessionOwner": "socket-id" | null,
   "inputs": [{ "id": "plughw:0,0", "name": "USB Audio" }, ...],
-  "outputs": [{ "id": "air:Kitchen", "name": "Kitchen (AirPlay)" }, ...],
+  "outputs": [{ "id": "air:Kitchen", "name": "Kitchen (AirPlay)", "volume": 50 }, ...],
   "selectedInput": "plughw:0,0",
   "selectedOutputs": ["air:Kitchen", "air:Bedroom"],
   "volume": 50,
@@ -27,7 +27,7 @@ Sent once immediately after connection. Contains the full server state.
 }
 ```
 
-`turntablePower` (v1.1) is present only when the server has a turntable smart plug configured — see [Turntable Power & Silence Auto-Off](#turntable-power--silence-auto-off-v11).
+Each output's optional `volume` (v1.1) is present only on outputs that support per-output volume — see [Per-Output Volume](#per-output-volume-v11). `turntablePower` (v1.1) is present only when the server has a turntable smart plug configured — see [Turntable Power & Silence Auto-Off](#turntable-power--silence-auto-off-v11).
 
 ### `inputs`
 
@@ -42,8 +42,10 @@ Sent when the available input device list changes.
 Sent when the available output device list changes (AirPlay devices discovered/lost, etc.).
 
 ```json
-{ "outputs": [{ "id": "air:Kitchen", "name": "Kitchen (AirPlay)" }] }
+{ "outputs": [{ "id": "air:Kitchen", "name": "Kitchen (AirPlay)", "volume": 50 }] }
 ```
+
+Each output object may carry an optional integer `volume` (0–100) — see [Per-Output Volume](#per-output-volume-v11) (v1.1).
 
 ### `input`
 
@@ -63,11 +65,21 @@ Sent when the active output selection changes.
 
 ### `volume`
 
-Sent when the volume changes.
+Sent when the master volume changes.
 
 ```json
 { "value": 75 }
 ```
+
+### `outputVolume` (v1.1)
+
+Sent whenever one output's per-output volume changes — including changes the server makes itself (e.g. a master `setVolume` "set all" emits one `outputVolume` per affected output). `value` is an integer 0–100.
+
+```json
+{ "id": "air:Kitchen", "value": 60 }
+```
+
+Only AirPlay outputs have independent volume; see [Per-Output Volume](#per-output-volume-v11).
 
 ### `turntablePower` (v1.1)
 
@@ -136,10 +148,18 @@ Output ID prefixes:
 
 ### `setVolume`
 
-Set the volume (0-100). Applies to AirPlay outputs.
+Set the master volume (0-100). Requires session ownership. Acts as "set all": applies the value to every currently selected AirPlay output's per-output volume, emitting `volume` plus one `outputVolume` per affected output.
 
 ```json
 { "value": 75 }
+```
+
+### `setOutputVolume` (v1.1)
+
+Set one output's per-output volume. Requires session ownership. `value` is clamped to 0–100 and rounded to an integer; unknown ids and outputs that don't support volume are ignored. Applies the gain to that output's stream and broadcasts `outputVolume`.
+
+```json
+{ "id": "air:Kitchen", "value": 60 }
 ```
 
 ### `setTurntablePower` (v1.1)
@@ -254,6 +274,16 @@ The `state` event includes config and autoconnect state:
   "autoconnectState": "idle"
 }
 ```
+
+## Per-Output Volume (v1.1)
+
+Each output can carry its own volume independent of the master. The contract is additive over v1:
+
+- **Capability by presence.** Every output object in `state.outputs` and the `outputs` event may include an optional integer `volume` (0–100). Clients enable per-speaker control based on the *presence* of this field on any output; a server without the feature omits it entirely and clients fall back to the single master slider.
+- **Which outputs support it.** Only AirPlay outputs (`air:` / `airpair:`) have a software gain knob (via `node_airtunes2` per-device volume), so only they carry `volume`. Local ALSA (`plughw:`) outputs are piped raw to `aplay` with no gain control and omit the field.
+- **Per-output volume is the authoritative device gain** (an absolute 0–100 level, not a trim). The master `volume` / `setVolume` is a "set all" convenience: it overwrites every selected output's per-output volume and emits an `outputVolume` for each. A newly selected output starts at the current master volume.
+- **Events:** `setOutputVolume {id, value}` (client→server, owner-only, clamped/rounded, unknown ids ignored) → applies the gain and broadcasts `outputVolume {id, value}` to all clients.
+- **Persistence.** Per-output volumes are runtime state, like the master `volume` — they survive reconnects (re-read from `state`) but reset on server restart. (This is deliberate: persisting every slider movement to `babelpod.config.json` would hammer the Pi's SD card. The master volume behaves the same way.)
 
 ## Turntable Power & Silence Auto-Off (v1.1)
 

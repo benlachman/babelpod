@@ -19,7 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume } = require('./lib/devices');
+const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
 
@@ -648,6 +648,36 @@ function setupArecordHandlers(devId, generation) {
 let volume = config.defaultVolume || 50;
 let selectedOutputs = [];
 
+// Per-output (per-speaker) volume — absolute gain 0-100 per output, keyed by
+// stable uiId. Only AirPlay outputs support independent gain (local ALSA
+// outputs have no software volume control), so only they carry a `volume`
+// field. Like the master `volume`, this is runtime state and resets on restart.
+let outputVolumes = {};
+
+// Resolved per-output volume (integer 0-100), defaulting to the master volume.
+function getOutputVolume(uiId) {
+  return Math.round(outputVolumes[uiId] ?? volume);
+}
+
+// Push an output's stored volume to its underlying AirPlay device(s). Only
+// touches devices currently added to airtunes; the stored value still applies
+// when the output is (re)selected later via syncOutputs.
+function applyOutputVolume(uiId) {
+  const unified = unifiedOutputs.find(u => u.uiId === uiId);
+  if (!unified) return;
+  const value = getOutputVolume(uiId);
+  unified.devices.forEach(device => {
+    if (!device.host || !device.port) return;
+    const deviceKey = `${device.host}:${device.port}`;
+    if (!activeAirPlayDevices.includes(deviceKey)) return;
+    try {
+      airtunes.setVolume(deviceKey, value);
+    } catch (e) {
+      console.error(`Error setting volume for ${uiId}:`, e);
+    }
+  });
+}
+
 let availablePcmOutputs = [];
 let availablePcmInputs = [];
 let availableBluetoothInputs = []; // TODO: Bluetooth input discovery not yet implemented
@@ -675,7 +705,13 @@ function buildCleanInputs() {
 }
 
 function buildCleanOutputs() {
-  return unifiedOutputs.map(o => ({ id: o.uiId, name: o.name }));
+  return unifiedOutputs.map(o => {
+    const output = { id: o.uiId, name: o.name };
+    // Capability by presence: only outputs that support independent gain
+    // carry a `volume` field, which the client uses to enable per-speaker mode
+    if (outputSupportsVolume(o.uiId)) output.volume = getOutputVolume(o.uiId);
+    return output;
+  });
 }
 
 function buildStatePayload() {
@@ -994,13 +1030,17 @@ function syncOutputs(newSelected) {
         } else if (aid.startsWith("air:") || aid.startsWith("airpair:")) {
           const ud = unifiedOutputs.find(u => u.uiId === aid);
           if (!ud) return;
+          // Seed a starting volume (master is a sensible default) so the
+          // output keeps a stable per-output level once selected
+          if (outputVolumes[aid] === undefined) outputVolumes[aid] = volume;
+          const outputVolume = getOutputVolume(aid);
           ud.devices.forEach(device => {
             if (device.host && device.port) {
               try {
                 const deviceKey = `${device.host}:${device.port}`;
                 airtunes.add(device.host, {
                   port: device.port,
-                  volume,
+                  volume: outputVolume,
                   stereo: !!device.isStereo
                 });
                 // Track active AirPlay devices
@@ -1020,14 +1060,10 @@ function syncOutputs(newSelected) {
       }
     });
     
-    // Set volume on all active AirPlay devices
+    // Apply each selected output's own per-output volume to its device(s)
     try {
-      activeAirPlayDevices.forEach(deviceKey => {
-        try {
-          airtunes.setVolume(deviceKey, volume);
-        } catch (e) {
-          console.error(`Error setting volume for ${deviceKey}:`, e);
-        }
+      selectedOutputs.forEach(uiId => {
+        if (outputSupportsVolume(uiId)) applyOutputVolume(uiId);
       });
     } catch (e) {
       console.error("Error setting AirTunes volume:", e);
@@ -1149,19 +1185,40 @@ io.on('connection', socket => {
 
     if (socket.id !== sessionOwner) return;
     try {
-      volume = clampVolume(vol);
-      // Set volume on all active AirPlay devices
-      activeAirPlayDevices.forEach(deviceKey => {
-        try {
-          airtunes.setVolume(deviceKey, volume);
-        } catch (e) {
-          console.error(`Error setting volume for ${deviceKey}:`, e);
-        }
-      });
+      volume = Math.round(clampVolume(vol));
       io.emit('volume', { value: volume });
+      // "Set all": master volume applies to every selected output's per-output
+      // volume, updating each stored value and broadcasting it so per-speaker
+      // sliders stay in sync. Per-output volume is the authoritative device gain.
+      selectedOutputs.forEach(uiId => {
+        if (!outputSupportsVolume(uiId)) return;
+        outputVolumes[uiId] = volume;
+        applyOutputVolume(uiId);
+        io.emit('outputVolume', { id: uiId, value: volume });
+      });
     } catch (e) {
       console.error("Error changing volume:", e);
       io.emit('serverError', { message: `Failed to change volume: ${e.message}` });
+    }
+  });
+
+  socket.on('setOutputVolume', (data) => {
+    const id = data?.id;
+    const rawValue = data?.value;
+    if (typeof id !== 'string' || typeof rawValue !== 'number' || !Number.isFinite(rawValue)) return;
+
+    if (socket.id !== sessionOwner) return;
+    // Ignore unknown outputs or ones that don't support independent volume
+    if (!outputSupportsVolume(id) || !unifiedOutputs.some(u => u.uiId === id)) return;
+
+    try {
+      const value = Math.round(clampVolume(rawValue));
+      outputVolumes[id] = value;
+      applyOutputVolume(id);
+      io.emit('outputVolume', { id, value });
+    } catch (e) {
+      console.error("Error changing output volume:", e);
+      io.emit('serverError', { message: `Failed to change output volume: ${e.message}` });
     }
   });
 
