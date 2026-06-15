@@ -309,6 +309,18 @@ describe('Socket.IO API Contract', () => {
       const config = await configPromise;
       expect(config.defaultVolume).toBe(60);
     });
+
+    test('setConfig persists and sanitizes per-speaker default volumes', async () => {
+      client = await connectClient();
+      await waitForEvent(client, 'state');
+
+      const configPromise = waitForEvent(client, 'config');
+      client.emit('setConfig', {
+        defaultOutputVolumes: { 'air:Kitchen': 150, 'air:Office': 40.4, 'air:Bad': 'loud' }
+      });
+      const config = await configPromise;
+      expect(config.defaultOutputVolumes).toEqual({ 'air:Kitchen': 100, 'air:Office': 40 });
+    });
   });
 
   describe('Autoconnect', () => {

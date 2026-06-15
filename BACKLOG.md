@@ -35,6 +35,10 @@ The Burr-Brown/TI USB Audio CODEC has no ALSA capture volume control — gain is
 - **HTTP command endpoint (§4):** `POST /api/setVolume|setOutputVolume|setTurntablePower` + `GET /api/state` with a shared-secret token, for AirSpin App Intents / Siri Shortcuts. Privileged (bypasses session owner), routes through the same control core, LAN only.
 - **HomeKit volume accessory (§5):** HAP-NodeJS Lightbulb whose `Brightness` maps to volume (the only Siri-controllable numeric), two-way sync, per-output Lightbulbs once §1 lands.
 
+## iOS App: per-speaker default volumes parity
+
+The server + web UI support `defaultOutputVolumes` (per-speaker default volume map applied on autoconnect; see API.md "Instance Configuration"). AirSpin's "save current as defaults" (`BabelPodClientView.swift`, ~line 968) only saves `defaultOutputIds` + a single `defaultVolume`, so saving defaults from iOS loses the per-speaker balance. For parity, AirSpin should read `config.defaultOutputVolumes`, include it when saving defaults (e.g. from the current per-output volumes of the selected speakers), and ideally expose per-speaker default sliders in its settings. Degrades gracefully today — iOS ignores the field and balanced autoconnect still works regardless of which client armed it.
+
 ## iOS App: Push Notification to Turn Off Record Player
 
 When autoconnect transitions from silence to idle (speakers released after 5 minutes of silence), send a push notification from the iOS app reminding the user to turn off the record player. The record is still spinning in the runout groove — the user may have walked away.
