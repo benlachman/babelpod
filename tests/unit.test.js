@@ -54,6 +54,33 @@ describe('BabelPod Utility Functions', () => {
       expect(unified).toHaveLength(1);
     });
 
+    test('should collapse the same device discovered on multiple addresses to one unique id', () => {
+      // Same name, different host (e.g. a Mac advertising AirPlay on two
+      // interfaces) — both map to the name-only uiId `air:Skippy Nano`.
+      const airplay = [
+        { name: 'Skippy Nano', stereo: null, host: '192.168.4.76', port: 7000 },
+        { name: 'Skippy Nano', stereo: null, host: '192.168.5.119', port: 7000 }
+      ];
+      const unified = buildUnifiedOutputs([], airplay);
+      const ids = unified.map(o => o.uiId);
+      expect(ids).toEqual(['air:Skippy Nano']); // exactly once
+      expect(new Set(ids).size).toBe(ids.length); // all ids unique
+    });
+
+    test('emitted ids are always unique across a mixed device list', () => {
+      const airplay = [
+        { name: 'Skippy Nano', stereo: null, host: '10.0.0.1', port: 7000 },
+        { name: 'Skippy Nano', stereo: null, host: '10.0.0.2', port: 7000 },
+        { name: 'Kitchen', stereo: null, host: '10.0.0.3', port: 7000 },
+        { name: 'L', stereo: 'Living Room', host: '10.0.0.4', port: 7000 },
+        { name: 'R', stereo: 'Living Room', host: '10.0.0.5', port: 7000 }
+      ];
+      const pcm = [{ id: 'plughw:0,0', name: 'USB', output: true, input: false }];
+      const ids = buildUnifiedOutputs(pcm, airplay).map(o => o.uiId);
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids.filter(id => id === 'air:Skippy Nano')).toHaveLength(1);
+    });
+
     test('should group stereo pairs sharing a group name', () => {
       const airplay = [
         { name: 'Left HomePod', stereo: 'Living Room', host: '192.168.1.20', port: 7000 },
