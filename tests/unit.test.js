@@ -3,7 +3,7 @@
  * These tests don't require hardware and test pure logic functions
  */
 
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('../lib/devices');
+const { parsePcmDevices, parseAirplayService, airplayTxtRecords, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('../lib/devices');
 
 describe('BabelPod Utility Functions', () => {
   describe('parsePcmDevices', () => {
@@ -42,7 +42,20 @@ describe('BabelPod Utility Functions', () => {
       expect(unified.map(o => o.uiId)).toEqual(['plughw:0,0', 'air:Kitchen']);
       expect(unified[0].name).toBe('Headphones - Output');
       expect(unified[1].name).toBe('Kitchen - AirPlay');
-      expect(unified[1].devices).toEqual([{ host: '192.168.1.10', port: 7000, isStereo: false }]);
+      expect(unified[1].devices).toEqual([{ host: '192.168.1.10', port: 7000, isStereo: false, txt: [] }]);
+    });
+
+    test('should carry each device TXT record through to the unified output (single and stereo pair)', () => {
+      const txt = ['features=0x4A7FCA00,0x3C356BD0'];
+      const airplay = [
+        { name: 'Kitchen', stereo: null, host: '192.168.1.10', port: 7000, txt },
+        { name: 'Living Room', stereo: 'Living Room', host: '192.168.1.11', port: 7000, txt },
+        { name: 'Living Room (2)', stereo: 'Living Room', host: '192.168.1.12', port: 7000, txt }
+      ];
+      const unified = buildUnifiedOutputs([], airplay);
+      expect(unified.find(o => o.uiId === 'air:Kitchen').devices[0].txt).toEqual(txt);
+      const pair = unified.find(o => o.uiId === 'airpair:Living Room');
+      expect(pair.devices.map(d => d.txt)).toEqual([txt, txt]);
     });
 
     test('should deduplicate AirPlay devices with the same name and host:port', () => {
@@ -235,7 +248,7 @@ describe('BabelPod Utility Functions', () => {
         port: 7000,
         txt: {}
       });
-      expect(service).toEqual({ name: 'Living Room', stereo: null, host: '192.168.1.100', port: 7000 });
+      expect(service).toEqual({ name: 'Living Room', stereo: null, host: '192.168.1.100', port: 7000, txt: [] });
     });
 
     test('should extract stereo group name from txt records', () => {
@@ -251,6 +264,49 @@ describe('BabelPod Utility Functions', () => {
     test('should return null for records without a fullname or addresses', () => {
       expect(parseAirplayService({ addresses: ['192.168.1.1'], port: 7000 })).toBeNull();
       expect(parseAirplayService({ fullname: 'X._airplay._tcp.local', addresses: [], port: 7000 })).toBeNull();
+    });
+
+    test('should carry the TXT record as key=value strings for node_airtunes2', () => {
+      const service = parseAirplayService({
+        fullname: 'Kitchen._airplay._tcp.local',
+        addresses: ['192.168.1.102'],
+        port: 7000,
+        txt: { features: '0x4A7FCA00,0x3C354BD0', model: 'AudioAccessory5,1', srcvers: '980.77.2' }
+      });
+      expect(service.txt).toEqual(['features=0x4A7FCA00,0x3C354BD0', 'model=AudioAccessory5,1', 'srcvers=980.77.2']);
+    });
+  });
+
+  describe('airplayTxtRecords', () => {
+    test('should return an empty list for a missing or malformed TXT object', () => {
+      expect(airplayTxtRecords(undefined)).toEqual([]);
+      expect(airplayTxtRecords(null)).toEqual([]);
+      expect(airplayTxtRecords('features=1')).toEqual([]);
+    });
+  });
+
+  describe('airplaySupportsTransientPairing (AirPlay 2 path selection)', () => {
+    test('should detect features bit 48 on HomePod / Apple TV TXT records', () => {
+      // Real records: HomePod mini (OS 27), HomePod gen 1 (OS 27), Apple TV 4K
+      expect(airplaySupportsTransientPairing(['features=0x4A7FCA00,0x3C354BD0'])).toBe(true);
+      expect(airplaySupportsTransientPairing(['features=0x4A7FCA00,0x3C356BD0'])).toBe(true);
+      expect(airplaySupportsTransientPairing(['model=AppleTV11,1', 'features=0x4A7FDFD5,0x3C177FDE'])).toBe(true);
+    });
+
+    test('should accept the short ft= key used by RAOP-style records', () => {
+      expect(airplaySupportsTransientPairing(['ft=0x4A7FCA00,0x3C354BD0'])).toBe(true);
+    });
+
+    test('should fall back to RAOP when the bit is clear or only the low word is present', () => {
+      expect(airplaySupportsTransientPairing(['features=0x4A7FCA00,0x3C344BD0'])).toBe(false);
+      expect(airplaySupportsTransientPairing(['features=0x445F8A00'])).toBe(false);
+    });
+
+    test('should fall back to RAOP with no TXT, no features, or an unparseable value', () => {
+      expect(airplaySupportsTransientPairing([])).toBe(false);
+      expect(airplaySupportsTransientPairing(undefined)).toBe(false);
+      expect(airplaySupportsTransientPairing(['model=shairport-sync'])).toBe(false);
+      expect(airplaySupportsTransientPairing(['features=garbage'])).toBe(false);
     });
 
     test('should return null for non-AirPlay services', () => {

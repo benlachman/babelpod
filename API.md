@@ -239,6 +239,8 @@ BabelPod stores instance configuration in `babelpod.config.json` alongside the s
 }
 ```
 
+`airplay2Enabled` (default `true`, **file-only** — not settable via `setConfig` and not surfaced in any client) selects the AirPlay 2 path (HAP transient pairing + `SETUP` plist) for receivers whose mDNS `features` advertise transient pairing (bit 48: HomePods, Apple TVs). Everything else keeps the legacy RAOP path. HomePod software / tvOS 27 accept a RAOP session (every RTSP request `200 OK`) but never render its audio, so this is required for those receivers; set it to `false` in `babelpod.config.json` only to force RAOP everywhere while debugging.
+
 `defaultOutputVolumes` (v1.1) is a per-speaker default volume map (`{ outputId: 0–100 }`). When autoconnect brings up the default outputs, each speaker comes up at its own level here, falling back to `defaultVolume` for any default speaker without an entry — so the default setup keeps its balance instead of all speakers starting at one number. AirPlay outputs only; the server clamps/rounds values and drops malformed entries on save. Settable via `setConfig` (the web UI Settings shows a slider per default speaker).
 
 ## Autoconnect

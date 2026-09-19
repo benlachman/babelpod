@@ -4,6 +4,10 @@
 
 In-app plug setup (`setupTurntablePlug`, PR #26) is deployed, but only the **boot-reconnect** path (`init`→`connect` to the already-commissioned plug) and the runtime-engagement of matter.js (commissioning begins, fails cleanly on a bad code) have been verified on hardware. A **full from-scratch commission via the in-app flow has not been exercised on a real plug** — doing so requires decommissioning the current plug (stop service, clear `.matter-storage/`, then commission a fresh plug in pairing mode through the web UI Settings form). Verify this end-to-end before relying on the in-app path to onboard a new plug.
 
+## node_airtunes2 fork: surface RTSP failures
+
+Found while diagnosing the HomePod OS 27 silence (PR for `airplay2Enabled`): the sender's `Receiving request:` log prints only the method, never the response code; non-200 responses to `RECORD`/`SETVOLUME`/`SETPROGRESS` are swallowed (`rtsp.js` `processData`); and the device emits `ready` even when *every* request is `403 Forbidden` (observed against an Apple TV in RAOP mode). BabelPod can therefore report a speaker as connected that never accepted the session. Fix in the fork: log response codes, and fail the device (emit `error`/cleanup) on a non-200 `RECORD`.
+
 ## iOS App: First-Interaction Gesture Delay
 
 The first tap on interactive controls (Toggle switches, Menu items) after the app connects to the server has a ~2-4 second delay before the action fires. Subsequent taps respond instantly. The console logs `Gesture: System gesture gate timed out.` when the delayed action finally resolves.

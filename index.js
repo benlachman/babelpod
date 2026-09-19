@@ -19,7 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
-const { parsePcmDevices, parseAirplayService, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
+const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
 
@@ -51,6 +51,10 @@ const DEFAULT_CONFIG = {
   // up the default speakers, each comes up at its own level here (falling back
   // to defaultVolume), so the default setup keeps its balance. AirPlay only.
   defaultOutputVolumes: {},
+  // Stream to receivers that advertise AirPlay 2 transient pairing over the
+  // AirPlay 2 path instead of legacy RAOP. Required for HomePods / Apple TVs
+  // on OS 27+, which silently drop RAOP audio. Set false to force RAOP.
+  airplay2Enabled: true,
   autoconnectEnabled: false,
   autoconnectThreshold: 0.01,
   // Turntable smart plug (Matter). Commission once by putting the plug in
@@ -905,6 +909,7 @@ function upsertAirplayDevice(data, eventName) {
     // Keep a known stereo pair name when a re-announcement omits TXT records
     // (common while the network is still warming up after cold boot)
     const stereo = service.stereo ?? existing.stereo;
+    if (service.txt.length) existing.txt = service.txt;
     if (existing.name !== service.name || existing.stereo !== stereo) {
       if (stereo && !existing.stereo) {
         log.info(`AirPlay device ${service.name} gained stereo pair name: ${stereo}`);
@@ -1110,12 +1115,16 @@ function syncOutputs(newSelected) {
             if (device.host && device.port) {
               try {
                 const deviceKey = `${device.host}:${device.port}`;
+                const airplay2 = config.airplay2Enabled !== false && airplaySupportsTransientPairing(device.txt);
                 airtunes.add(device.host, {
                   port: device.port,
                   volume: outputVolume,
                   stereo: !!device.isStereo,
-                  name: config.displayName // shown in AirPlay receiver prompts (e.g. macOS)
+                  name: config.displayName, // shown in AirPlay receiver prompts (e.g. macOS)
+                  airplay2,
+                  txt: device.txt
                 });
+                console.log(`AirPlay ${airplay2 ? 'AirPlay 2' : 'RAOP'} session to ${ud.name} (${deviceKey})`);
                 // Track active AirPlay devices
                 if (!activeAirPlayDevices.includes(deviceKey)) {
                   activeAirPlayDevices.push(deviceKey);
