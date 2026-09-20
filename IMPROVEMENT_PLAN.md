@@ -21,7 +21,7 @@ A prioritized plan for improving the BabelPod server repo, based on a full revie
 Since we own `benlachman/node_airtunes2#babelpod-sender-name`:
 
 - Move `pkg` to devDependencies (or drop), make `castv2-client` optional or remove it, bump/drop `yargs`
-- Tag the fork (e.g. `v2.4.9-babelpod.1`) instead of referencing a moving branch, for reproducible Pi deploys
+- ~~Tag the fork instead of referencing a moving branch~~ — done; BabelPod now pins `v2.4.9-babelpod.2` (branch `babelpod`)
 - The remaining `ws` 8.20.1 advisory comes via socket.io's `engine.io` — a plain `npm update` likely clears it
 
 ### 2. Structure: `index.js` is ~1450 lines / 40 top-level functions
