@@ -7,7 +7,12 @@ const path = require('path');
 // We start it as a child process with DISABLE_PCM=1 to skip ALSA scanning.
 const { spawn } = require('child_process');
 
+const fs = require('fs');
+const os = require('os');
+
 const TEST_PORT = 3999;
+// rebootHost runs this instead of rebooting the machine running the tests
+const REBOOT_MARKER = path.join(os.tmpdir(), `babelpod-reboot-marker-${process.pid}`);
 let serverProcess;
 let client;
 
@@ -41,9 +46,21 @@ function waitForEvent(socket, event, timeout = 2000) {
   });
 }
 
+async function becomeOwner(socket) {
+  const state = await waitForEvent(socket, 'state');
+  if (state.sessionOwner === socket.id) return;
+  const sessionPromise = waitForEvent(socket, 'session');
+  socket.emit('takeover');
+  await sessionPromise;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 beforeAll((done) => {
   serverProcess = spawn(process.execPath, [path.join(__dirname, '..', 'index.js')], {
-    env: { ...process.env, BABEL_PORT: String(TEST_PORT), DISABLE_PCM: '1' },
+    env: { ...process.env, BABEL_PORT: String(TEST_PORT), DISABLE_PCM: '1', BABEL_REBOOT_COMMAND: `touch '${REBOOT_MARKER}'` },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
@@ -58,6 +75,7 @@ beforeAll((done) => {
 });
 
 afterAll((done) => {
+  fs.rmSync(REBOOT_MARKER, { force: true });
   if (client) client.disconnect();
   if (serverProcess) {
     serverProcess.on('exit', () => done());
@@ -374,6 +392,42 @@ describe('Socket.IO API Contract', () => {
       await expect(
         waitForEvent(client, 'output', 500)
       ).rejects.toThrow('Timeout');
+    });
+  });
+  // Runs last: a reboot request releases all outputs
+  describe('Host reboot', () => {
+    test('state advertises canRebootHost when a reboot command is available', async () => {
+      client = await connectClient();
+      const state = await waitForEvent(client, 'state');
+      expect(state.canRebootHost).toBe(true);
+    });
+
+    test('rebootHost from a non-owner is ignored', async () => {
+      client = await connectClient();
+      await becomeOwner(client);
+      const observer = await connectClient();
+      await waitForEvent(observer, 'state');
+
+      observer.emit('rebootHost');
+      await sleep(1500);
+      expect(fs.existsSync(REBOOT_MARKER)).toBe(false);
+      observer.disconnect();
+    });
+
+    test('rebootHost from the owner announces the restart, releases outputs, and runs the reboot command', async () => {
+      client = await connectClient();
+      await becomeOwner(client);
+
+      const statusPromise = waitForEvent(client, 'status');
+      const outputPromise = waitForEvent(client, 'output');
+      client.emit('rebootHost');
+
+      expect((await statusPromise).message).toMatch(/^Restarting /);
+      expect(await outputPromise).toEqual({ ids: [] });
+
+      const deadline = Date.now() + 4000;
+      while (!fs.existsSync(REBOOT_MARKER) && Date.now() < deadline) await sleep(100);
+      expect(fs.existsSync(REBOOT_MARKER)).toBe(true);
     });
   });
 });

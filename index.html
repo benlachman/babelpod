@@ -281,6 +281,7 @@
         padding: 0.5rem 0;
       }
       details.settings input[type="text"],
+      details.settings input[type="number"],
       details.settings select {
         width: 100%;
         padding: 0.5rem;
@@ -304,6 +305,39 @@
       details.settings .save-button:hover {
         background: #388e3c;
       }
+      details.settings .save-button.danger {
+        background: #b71c1c;
+      }
+      details.settings .save-button.danger:hover {
+        background: #c62828;
+      }
+      .warning {
+        color: #ffb300;
+        font-size: 0.8rem;
+        margin: 0.35rem 0 0;
+      }
+      .volume-mode {
+        display: flex;
+      }
+      .volume-mode button {
+        background: #2a2a2a;
+        border: 1px solid #444;
+        color: #aaa;
+        font-size: 0.75rem;
+        padding: 0.2rem 0.6rem;
+        cursor: pointer;
+      }
+      .volume-mode button:first-child {
+        border-radius: 4px 0 0 4px;
+      }
+      .volume-mode button:last-child {
+        border-radius: 0 4px 4px 0;
+        border-left: none;
+      }
+      .volume-mode button.active {
+        background: #444;
+        color: #fff;
+      }
     </style>
   </head>
   <body>
@@ -311,6 +345,7 @@
     <div class="container">
       <label>Input Device</label>
       <div class="radio-list" id="inputsList"></div>
+      <p class="warning" id="inputWarning" style="display: none;">⚠ No input selected — nothing will play.</p>
 
       <!-- Hidden unless the server reports turntablePower (capability by presence) -->
       <div class="turntable-power-section" id="turntablePowerSection" style="display: none;">
@@ -318,8 +353,16 @@
         <span class="power-status" id="turntablePowerStatus"></span>
         <button class="power-button" id="turntablePowerButton" onclick="toggleTurntablePower()">Off</button>
       </div>
+      <p class="warning" id="turntableWarning" style="display: none;">⚠ The turntable is powered off.</p>
 
-      <label for="outputVolume">Volume</label>
+      <div style="display: flex; align-items: center; justify-content: space-between; margin: 1rem 0 0.25rem;">
+        <label for="outputVolume" style="margin: 0;">Volume</label>
+        <!-- Shown only when outputs report a volume (per-output volume capability) -->
+        <div class="volume-mode" id="volumeMode" style="display: none;">
+          <button type="button" data-mode="shared" onclick="setVolumeMode(false)">Shared</button>
+          <button type="button" data-mode="perSpeaker" onclick="setVolumeMode(true)">Per Speaker</button>
+        </div>
+      </div>
       <div style="display: flex; align-items: center; gap: 8px;">
         <input type="range" min="0" max="100" value="50" id="outputVolume" style="flex: 1;" />
         <span id="volumeLabel" style="font-size: 0.85rem; color: #999; min-width: 35px; text-align: right;">50%</span>
@@ -334,6 +377,7 @@
         <span id="autoconnectDisabledHint" style="display: none; font-size: 0.75rem; color: #666; cursor: pointer;" onclick="document.querySelector('.settings').open = true;">Enable Autoconnect &rarr;</span>
       </div>
       <div class="checkbox-list" id="outputsList"></div>
+      <p class="warning" id="outputWarning" style="display: none;">⚠ No speakers selected, and autoconnect won't pick any.</p>
 
       <div class="info">
         <label style="font-size: 1rem;">Status</label>
@@ -377,6 +421,27 @@
           </div>
           <div class="checkbox-list" id="settingsDefaultOutputs"></div>
 
+          <!-- Shown only when a turntable plug is configured (state.turntablePower) -->
+          <div id="autoOffSettings" style="display: none;">
+            <label style="margin-top: 1.5rem;">Silence Auto-Off</label>
+            <label style="display: flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.85rem; color: #aaa;">
+              <input type="checkbox" id="settingsAutoOffEnabled" onchange="updateAutoOffDetails()" style="transform: scale(1.1); accent-color: #fe0000;" />
+              Turn the turntable off after silence
+            </label>
+            <p id="autoOffDisabledHint" style="font-size: 0.8rem; color: #999; margin: 0.35rem 0 0;">Power stays on until you turn it off.</p>
+            <div id="autoOffDetails">
+              <label for="settingsAutoOffMinutes">Minutes of silence before turning off</label>
+              <input type="number" id="settingsAutoOffMinutes" min="1" max="240" step="1" />
+              <details style="margin-top: 0.5rem;">
+                <summary style="font-size: 0.85rem;">Advanced</summary>
+                <label for="settingsAutoOffThresholdDb">Silence threshold (dB)</label>
+                <input type="number" id="settingsAutoOffThresholdDb" min="-90" max="0" step="1" />
+                <label for="settingsAutoOffNoiseFloorDb">Noise floor (dB) — quieter than this means the turntable is already off</label>
+                <input type="number" id="settingsAutoOffNoiseFloorDb" min="-90" max="0" step="1" />
+              </details>
+            </div>
+          </div>
+
           <button class="save-button" id="saveSettingsButton" onclick="saveSettings()">Save Settings</button>
 
           <label style="margin-top: 1.5rem;">Turntable Power Plug</label>
@@ -395,6 +460,15 @@
               <button class="save-button" id="plugSetupButton" style="margin-top: 0;" onclick="setupPlug()">Set Up</button>
             </div>
             <p id="plugSetupStatus" style="font-size: 0.8rem; color: #999; margin: 0.5rem 0 0; min-height: 1rem;"></p>
+          </div>
+
+          <!-- Shown only when the server advertises state.canRebootHost -->
+          <div id="hostRebootSection" style="display: none;">
+            <label style="margin-top: 1.5rem;">Restart</label>
+            <p style="font-size: 0.85rem; color: #999; margin: 0 0 0.5rem;">
+              Reboots the BabelPod server. Playback stops for about a minute while it comes back.
+            </p>
+            <button class="save-button danger" id="rebootHostButton" style="margin-top: 0;" onclick="rebootHost()">Restart</button>
           </div>
         </div>
       </details>
@@ -440,6 +514,9 @@
       let currentAutoconnectState = "paused";
       let availableOutputsList = [];
       let turntablePower = null; // {on, reachable} — null when the server has no plug
+      let canRebootHost = false; // state.canRebootHost — the server can be rebooted from settings
+      let hasReceivedState = false; // warnings are suppressed until connected with state
+      let perSpeakerVolumeEnabled = readPerSpeakerVolumePreference();
       let turntablePowerPending = false;
       let turntablePowerPendingTimeout = null;
       let plugSetupPending = false;
@@ -576,7 +653,7 @@
 
           // Per-output volume slider — shown only for outputs the server
           // reports a `volume` for (per-output volume capability by presence)
-          if (typeof o.volume === "number") {
+          if (typeof o.volume === "number" && perSpeakerVolumeEnabled) {
             lb.style.flexWrap = "wrap";
             const slider = document.createElement("input");
             slider.type = "range";
@@ -600,6 +677,49 @@
           }
           outputsListDiv.appendChild(lb);
         });
+        renderVolumeMode(outputs);
+      }
+
+      // Shared vs Per Speaker volume (a per-browser preference, like AirSpin's).
+      // Shared hides the per-speaker sliders; the master slider always works.
+      function readPerSpeakerVolumePreference() {
+        try {
+          return localStorage.getItem("perSpeakerVolumeEnabled") !== "false";
+        } catch (_) {
+          return true;
+        }
+      }
+
+      function renderVolumeMode(outputs) {
+        const control = document.getElementById("volumeMode");
+        const supportsPerOutputVolume = outputs.some((o) => typeof o.volume === "number");
+        control.style.display = supportsPerOutputVolume ? "flex" : "none";
+        control.querySelectorAll("button").forEach((button) => {
+          button.classList.toggle("active", (button.dataset.mode === "perSpeaker") === perSpeakerVolumeEnabled);
+        });
+      }
+
+      function setVolumeMode(perSpeaker) {
+        perSpeakerVolumeEnabled = perSpeaker;
+        try {
+          localStorage.setItem("perSpeakerVolumeEnabled", String(perSpeaker));
+        } catch (_) {}
+        renderOutputsList(availableOutputsList);
+      }
+
+      // Same conditions as AirSpin's warnings
+      function renderWarnings() {
+        const selectedInputInfo = availableInputsList.find((input) => input.id === currentInput);
+        const noInput = hasReceivedState &&
+          (!currentInput || currentInput === "void" || /none/i.test(selectedInputInfo?.name || ""));
+        const autoconnectWillPickSpeakers = !!currentAutoconnectState &&
+          currentAutoconnectState !== "paused" &&
+          (currentConfig.defaultOutputIds || []).length > 0;
+        const noOutput = hasReceivedState && currentOutputs.length === 0 && !autoconnectWillPickSpeakers;
+        const turntableOff = hasReceivedState && !!turntablePower && !turntablePower.on;
+        document.getElementById("inputWarning").style.display = noInput ? "" : "none";
+        document.getElementById("outputWarning").style.display = noOutput ? "" : "none";
+        document.getElementById("turntableWarning").style.display = turntableOff ? "" : "none";
       }
 
       function onOutputVolumeInput(id, slider) {
@@ -631,6 +751,9 @@
         turntablePower = s.turntablePower || null;
         renderTurntablePower();
         renderPlugSettings();
+        canRebootHost = s.canRebootHost === true;
+        renderHostReboot();
+        hasReceivedState = true;
 
         renderInputsList();
         updateInputSelection();
@@ -645,12 +768,14 @@
         updateSettingsForm();
         updateServerName();
         updateAutoconnectButton();
+        renderWarnings();
       });
 
       // Incremental updates
       socket.on("inputs", (d) => {
         availableInputsList = d.inputs;
         renderInputsList();
+        renderWarnings();
       });
       socket.on("outputs", (d) => {
         availableOutputsList = d.outputs;
@@ -666,6 +791,7 @@
           if (radio) radio.checked = true;
         }
         updateInputSelection();
+        renderWarnings();
       });
       socket.on("output", (d) => {
         currentOutputs = d.ids;
@@ -680,6 +806,7 @@
         }
         renderActiveOutputs();
         updateAutoconnectButton();
+        renderWarnings();
       });
       socket.on("volume", (d) => {
         currentVolume = d.value;
@@ -740,6 +867,7 @@
         }
         renderTurntablePower();
         renderPlugSettings();
+        renderWarnings();
       });
 
       // Connection lifecycle
@@ -752,6 +880,8 @@
       });
       socket.on("disconnect", () => {
         showError("Disconnected from server. Attempting to reconnect...");
+        hasReceivedState = false;
+        renderWarnings();
       });
       socket.on("connect_error", (error) => {
         showError("Connection error: " + error.message);
@@ -762,6 +892,7 @@
         currentConfig = c;
         updateSettingsForm();
         updateServerName();
+        renderWarnings();
 
         if (waitingForConfigConfirmation) {
           waitingForConfigConfirmation = false;
@@ -778,6 +909,7 @@
         currentAutoconnectState = d.state;
         updateAutoconnectButton();
         renderActiveOutputs();
+        renderWarnings();
       });
       socket.on("rmsLevel", (d) => {
         const indicators = inputsList.querySelectorAll(".input-level-indicator");
@@ -849,6 +981,8 @@
 
       // Turntable plug setup (Settings). Configured = turntablePower present.
       function renderPlugSettings() {
+        // Silence auto-off only matters once a plug is commissioned
+        document.getElementById("autoOffSettings").style.display = turntablePower ? "" : "none";
         const configuredDiv = document.getElementById("plugConfigured");
         const setupDiv = document.getElementById("plugSetup");
         if (!configuredDiv || !setupDiv) return;
@@ -888,6 +1022,22 @@
             status.textContent = "No response — check the plug is in pairing mode and try again.";
           }
         }, 75000);
+      }
+
+      function renderHostReboot() {
+        document.getElementById("hostRebootSection").style.display = canRebootHost ? "" : "none";
+        const button = document.getElementById("rebootHostButton");
+        button.disabled = false;
+        button.textContent = `Restart ${currentConfig?.displayName || "BabelPod"}`;
+      }
+
+      function rebootHost() {
+        const name = currentConfig?.displayName || "BabelPod";
+        if (!confirm(`Restart ${name}? Playback stops for about a minute while it reboots.`)) return;
+        socket.emit("rebootHost");
+        const button = document.getElementById("rebootHostButton");
+        button.disabled = true;
+        button.textContent = "Restarting…";
       }
 
       // Autoconnect controls
@@ -951,6 +1101,11 @@
         document.getElementById("settingsInputMode").value = (currentConfig.autoconnectThreshold || 0.01) < 0.002 ? "line" : "phono";
         document.getElementById("settingsDefaultVolume").value = currentConfig.defaultVolume || 50;
         updateSettingsVolumeProgress();
+        document.getElementById("settingsAutoOffEnabled").checked = currentConfig.autoOffEnabled === true;
+        document.getElementById("settingsAutoOffMinutes").value = currentConfig.autoOffSilenceMinutes ?? 20;
+        document.getElementById("settingsAutoOffThresholdDb").value = currentConfig.autoOffSilenceThresholdDb ?? -43;
+        document.getElementById("settingsAutoOffNoiseFloorDb").value = currentConfig.autoOffNoiseFloorDb ?? -62;
+        updateAutoOffDetails();
 
         // Populate default input select
         const defaultInputSelect = document.getElementById("settingsDefaultInput");
@@ -1048,7 +1203,7 @@
           }
         }, 5000);
 
-        socket.emit("setConfig", {
+        const settings = {
           displayName: document.getElementById("settingsDisplayName").value,
           defaultInputId: document.getElementById("settingsDefaultInput").value,
           defaultOutputIds: selectedDefaultOutputs,
@@ -1056,7 +1211,28 @@
           defaultOutputVolumes: defaultOutputVolumes,
           autoconnectEnabled: document.getElementById("settingsAutoconnectEnabled").checked,
           autoconnectThreshold: autoconnectThreshold
-        });
+        };
+        // Same ranges AirSpin enforces (the server stores these as given)
+        if (turntablePower) {
+          settings.autoOffEnabled = document.getElementById("settingsAutoOffEnabled").checked;
+          settings.autoOffSilenceMinutes = clampedInteger("settingsAutoOffMinutes", 1, 240, currentConfig.autoOffSilenceMinutes ?? 20);
+          settings.autoOffSilenceThresholdDb = clampedInteger("settingsAutoOffThresholdDb", -90, 0, currentConfig.autoOffSilenceThresholdDb ?? -43);
+          settings.autoOffNoiseFloorDb = clampedInteger("settingsAutoOffNoiseFloorDb", -90, 0, currentConfig.autoOffNoiseFloorDb ?? -62);
+        }
+        socket.emit("setConfig", settings);
+      }
+
+      function clampedInteger(elementId, minimum, maximum, fallback) {
+        const raw = document.getElementById(elementId).value;
+        const number = Math.round(Number(raw));
+        if (raw === "" || !Number.isFinite(number)) return fallback;
+        return Math.min(maximum, Math.max(minimum, number));
+      }
+
+      function updateAutoOffDetails() {
+        const enabled = document.getElementById("settingsAutoOffEnabled").checked;
+        document.getElementById("autoOffDetails").style.display = enabled ? "" : "none";
+        document.getElementById("autoOffDisabledHint").style.display = enabled ? "none" : "";
       }
 
       let waitingForConfigConfirmation = false;
