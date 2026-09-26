@@ -174,3 +174,49 @@ describe('Web UI — per-speaker default volumes (settings)', () => {
     expect(byId['air:Office']).toBe('55');    // falls back to defaultVolume
   });
 });
+
+describe('Web UI — restart server (settings)', () => {
+  const outputs = [{ id: 'air:Kitchen', name: 'Kitchen - AirPlay', volume: 40 }];
+
+  test('hides the restart section when the server does not advertise canRebootHost', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs });
+    expect(document.getElementById('hostRebootSection').style.display).toBe('none');
+  });
+
+  test('shows the restart section, named after the server, when canRebootHost is present', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: { displayName: 'PattyPi' }, canRebootHost: true });
+    expect(document.getElementById('hostRebootSection').style.display).toBe('');
+    expect(document.getElementById('rebootHostButton').textContent).toBe('Restart PattyPi');
+  });
+
+  test('confirming emits rebootHost and disables the button', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: { displayName: 'PattyPi' }, canRebootHost: true });
+    window.confirm = jest.fn(() => true);
+    document.getElementById('rebootHostButton').click();
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('Restart PattyPi?'));
+    expect(emitted.filter((e) => e.event === 'rebootHost')).toHaveLength(1);
+    const button = document.getElementById('rebootHostButton');
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('Restarting…');
+  });
+
+  test('cancelling the confirmation does not emit', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, canRebootHost: true });
+    window.confirm = jest.fn(() => false);
+    document.getElementById('rebootHostButton').click();
+    expect(emitted.filter((e) => e.event === 'rebootHost')).toHaveLength(0);
+  });
+
+  test('the state after reconnecting re-enables the button', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: { displayName: 'PattyPi' }, canRebootHost: true });
+    window.confirm = jest.fn(() => true);
+    document.getElementById('rebootHostButton').click();
+    fire('state', { ...baseState, outputs, config: { displayName: 'PattyPi' }, canRebootHost: true });
+    expect(document.getElementById('rebootHostButton').disabled).toBe(false);
+  });
+});

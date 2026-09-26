@@ -396,6 +396,15 @@
             </div>
             <p id="plugSetupStatus" style="font-size: 0.8rem; color: #999; margin: 0.5rem 0 0; min-height: 1rem;"></p>
           </div>
+
+          <!-- Shown only when the server advertises state.canRebootHost -->
+          <div id="hostRebootSection" style="display: none;">
+            <label style="margin-top: 1.5rem;">Restart</label>
+            <p style="font-size: 0.85rem; color: #999; margin: 0 0 0.5rem;">
+              Reboots the BabelPod server. Playback stops for about a minute while it comes back.
+            </p>
+            <button class="save-button" id="rebootHostButton" style="margin-top: 0;" onclick="rebootHost()">Restart</button>
+          </div>
         </div>
       </details>
     </div>
@@ -440,6 +449,7 @@
       let currentAutoconnectState = "paused";
       let availableOutputsList = [];
       let turntablePower = null; // {on, reachable} — null when the server has no plug
+      let canRebootHost = false; // state.canRebootHost — the server can be rebooted from settings
       let turntablePowerPending = false;
       let turntablePowerPendingTimeout = null;
       let plugSetupPending = false;
@@ -631,6 +641,8 @@
         turntablePower = s.turntablePower || null;
         renderTurntablePower();
         renderPlugSettings();
+        canRebootHost = s.canRebootHost === true;
+        renderHostReboot();
 
         renderInputsList();
         updateInputSelection();
@@ -888,6 +900,22 @@
             status.textContent = "No response — check the plug is in pairing mode and try again.";
           }
         }, 75000);
+      }
+
+      function renderHostReboot() {
+        document.getElementById("hostRebootSection").style.display = canRebootHost ? "" : "none";
+        const button = document.getElementById("rebootHostButton");
+        button.disabled = false;
+        button.textContent = `Restart ${currentConfig?.displayName || "BabelPod"}`;
+      }
+
+      function rebootHost() {
+        const name = currentConfig?.displayName || "BabelPod";
+        if (!confirm(`Restart ${name}? Playback stops for about a minute while it reboots.`)) return;
+        socket.emit("rebootHost");
+        const button = document.getElementById("rebootHostButton");
+        button.disabled = true;
+        button.textContent = "Restarting…";
       }
 
       // Autoconnect controls
