@@ -23,6 +23,7 @@ function loadUi() {
   handlers = {};
   emitted = [];
   document.body.innerHTML = bodyInner;
+  window.localStorage.clear(); // volume-mode preference must not leak between tests
   if (!window.CSS) window.CSS = { escape: (s) => s };
   // Stub socket.io: record handlers and emitted events
   window.io = () => ({
@@ -218,5 +219,154 @@ describe('Web UI — restart server (settings)', () => {
     document.getElementById('rebootHostButton').click();
     fire('state', { ...baseState, outputs, config: { displayName: 'PattyPi' }, canRebootHost: true });
     expect(document.getElementById('rebootHostButton').disabled).toBe(false);
+  });
+});
+
+describe('Web UI — silence auto-off (settings)', () => {
+  const outputs = [{ id: 'air:Kitchen', name: 'Kitchen - AirPlay', volume: 40 }];
+  const plugged = { turntablePower: { on: true, reachable: true } };
+  const autoOffConfig = {
+    displayName: 'PattyPi',
+    autoOffEnabled: true,
+    autoOffSilenceMinutes: 20,
+    autoOffSilenceThresholdDb: -43,
+    autoOffNoiseFloorDb: -62,
+  };
+
+  test('is hidden until a plug is configured', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: autoOffConfig });
+    expect(document.getElementById('autoOffSettings').style.display).toBe('none');
+  });
+
+  test('is shown and filled from config when a plug is configured', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: autoOffConfig, ...plugged });
+    expect(document.getElementById('autoOffSettings').style.display).toBe('');
+    expect(document.getElementById('settingsAutoOffEnabled').checked).toBe(true);
+    expect(document.getElementById('settingsAutoOffMinutes').value).toBe('20');
+    expect(document.getElementById('settingsAutoOffThresholdDb').value).toBe('-43');
+    expect(document.getElementById('settingsAutoOffNoiseFloorDb').value).toBe('-62');
+  });
+
+  test('turning it off hides the timing fields', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: autoOffConfig, ...plugged });
+    const checkbox = document.getElementById('settingsAutoOffEnabled');
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new window.Event('change'));
+    expect(document.getElementById('autoOffDetails').style.display).toBe('none');
+    expect(document.getElementById('autoOffDisabledHint').style.display).toBe('');
+  });
+
+  test('Save Settings sends the auto-off fields, clamped to the AirSpin ranges', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: autoOffConfig, ...plugged });
+    document.getElementById('settingsAutoOffMinutes').value = '500';
+    document.getElementById('settingsAutoOffThresholdDb').value = '-40.4';
+    document.getElementById('settingsAutoOffNoiseFloorDb').value = '';
+    document.getElementById('saveSettingsButton').click();
+    const setConfig = emitted.filter((e) => e.event === 'setConfig');
+    expect(setConfig).toHaveLength(1);
+    expect(setConfig[0].data).toMatchObject({
+      autoOffEnabled: true,
+      autoOffSilenceMinutes: 240,
+      autoOffSilenceThresholdDb: -40,
+      autoOffNoiseFloorDb: -62, // empty field keeps the current value
+    });
+  });
+
+  test('Save Settings leaves auto-off out when no plug is configured', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, config: autoOffConfig });
+    document.getElementById('saveSettingsButton').click();
+    const setConfig = emitted.filter((e) => e.event === 'setConfig');
+    expect(setConfig[0].data).not.toHaveProperty('autoOffEnabled');
+  });
+});
+
+describe('Web UI — Shared vs Per Speaker volume', () => {
+  const outputs = [
+    { id: 'air:Kitchen', name: 'Kitchen - AirPlay', volume: 40 },
+    { id: 'plughw:0,0', name: 'Headphones - Output' },
+  ];
+
+  test('the mode control appears only when outputs support per-output volume', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs: [{ id: 'plughw:0,0', name: 'Headphones - Output' }] });
+    expect(document.getElementById('volumeMode').style.display).toBe('none');
+    fire('state', { ...baseState, outputs });
+    expect(document.getElementById('volumeMode').style.display).toBe('flex');
+  });
+
+  test('Shared hides per-speaker sliders, Per Speaker brings them back with current volumes', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs });
+    document.querySelector('#volumeMode button[data-mode="shared"]').click();
+    expect(document.querySelectorAll('#outputsList input.output-volume')).toHaveLength(0);
+    fire('outputVolume', { id: 'air:Kitchen', value: 65 });
+    document.querySelector('#volumeMode button[data-mode="perSpeaker"]').click();
+    const sliders = document.querySelectorAll('#outputsList input.output-volume');
+    expect(sliders).toHaveLength(1);
+    expect(sliders[0].value).toBe('65');
+  });
+
+  test('the choice is remembered in this browser', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs });
+    document.querySelector('#volumeMode button[data-mode="shared"]').click();
+    expect(window.localStorage.getItem('perSpeakerVolumeEnabled')).toBe('false');
+  });
+});
+
+describe('Web UI — warnings', () => {
+  const outputs = [{ id: 'air:Kitchen', name: 'Kitchen - AirPlay', volume: 40 }];
+  const shown = (id) => document.getElementById(id).style.display !== 'none';
+
+  test('warns about no input and no speakers when nothing is selected and autoconnect is paused', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs });
+    expect(shown('inputWarning')).toBe(true);
+    expect(shown('outputWarning')).toBe(true);
+  });
+
+  test('no speaker warning while autoconnect is listening with default speakers', () => {
+    loadUi();
+    fire('state', {
+      ...baseState,
+      outputs,
+      autoconnectState: 'idle',
+      config: { defaultOutputIds: ['air:Kitchen'] },
+    });
+    expect(shown('outputWarning')).toBe(false);
+  });
+
+  test('warnings clear as the user selects an input and a speaker', () => {
+    loadUi();
+    fire('state', {
+      ...baseState,
+      inputs: [{ id: 'void', name: 'None' }, { id: 'plughw:0,0', name: 'USB Audio' }],
+      outputs,
+    });
+    fire('input', { id: 'plughw:0,0' });
+    fire('output', { ids: ['air:Kitchen'] });
+    expect(shown('inputWarning')).toBe(false);
+    expect(shown('outputWarning')).toBe(false);
+  });
+
+  test('warns when the turntable plug is off, and clears when it turns on', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs, turntablePower: { on: false, reachable: true } });
+    expect(shown('turntableWarning')).toBe(true);
+    fire('turntablePower', { on: true, reachable: true });
+    expect(shown('turntableWarning')).toBe(false);
+  });
+
+  test('warnings are suppressed while disconnected', () => {
+    loadUi();
+    fire('state', { ...baseState, outputs });
+    fire('disconnect');
+    expect(shown('inputWarning')).toBe(false);
+    expect(shown('outputWarning')).toBe(false);
   });
 });
