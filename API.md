@@ -23,11 +23,12 @@ Sent once immediately after connection. Contains the full server state.
   "selectedInput": "plughw:0,0",
   "selectedOutputs": ["air:Kitchen", "air:Bedroom"],
   "volume": 50,
-  "turntablePower": { "on": true, "reachable": true }
+  "turntablePower": { "on": true, "reachable": true },
+  "canRebootHost": true
 }
 ```
 
-Each output's optional `volume` (v1.1) is present only on outputs that support per-output volume — see [Per-Output Volume](#per-output-volume-v11). `turntablePower` (v1.1) is present only when the server has a turntable smart plug configured — see [Turntable Power & Silence Auto-Off](#turntable-power--silence-auto-off-v11).
+Each output's optional `volume` (v1.1) is present only on outputs that support per-output volume — see [Per-Output Volume](#per-output-volume-v11). `turntablePower` (v1.1) is present only when the server has a turntable smart plug configured — see [Turntable Power & Silence Auto-Off](#turntable-power--silence-auto-off-v11). `canRebootHost` (v1.1) is present (always `true`) only when the server can be rebooted from a client — see [`rebootHost`](#reboothost-v11).
 
 ### `inputs`
 
@@ -181,6 +182,18 @@ Commission a Matter smart plug at runtime from a manual pairing code (no server 
 ```
 
 Dashes are optional. Flow for clients: emit this, show a pending state (commissioning can take up to ~60s), then resolve on the **first `turntablePower` broadcast** (success — the power control now appears) or a **`serverError`** (failure — stay on the setup form). The server also emits a `status` while commissioning and on success. Only one plug is supported; there is no in-app removal.
+
+### `rebootHost` (v1.1)
+
+Reboot the machine BabelPod runs on (the Raspberry Pi). Requires session ownership; ignored unless `state.canRebootHost` is present, and ignored while a reboot is already under way. No payload.
+
+```json
+{}
+```
+
+The server broadcasts a `status` (`"Restarting <displayName>…"`), releases every output (`output` with `ids: []`, so AirPlay receivers get a proper teardown), then about a second later runs `sudo -n systemctl reboot`. If the command can't run, it emits `serverError` (`"Restart failed: …"`) and the server keeps going. On success, clients simply see the connection drop; Socket.IO reconnects when the Pi is back (typically about a minute) and the new `state` resets any "restarting" UI. Clients should confirm before emitting.
+
+Availability: on Linux the command is `sudo -n systemctl reboot`, which needs passwordless sudo for the service user (true on the Pi). Elsewhere `canRebootHost` is absent unless `BABEL_REBOOT_COMMAND` is set, which also overrides the command (the API tests use it to run a harmless marker command).
 
 ### `takeover`
 

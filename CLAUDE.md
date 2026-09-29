@@ -67,6 +67,7 @@ The turntable's power outlet is a Matter smart plug commissioned onto BabelPod's
 ### Device Discovery
 
 - **AirPlay:** mDNS via `dnssd2`, browsing `_airplay._tcp`. Stereo pairs detected via `gpn` TXT record
+- **Discovery watchdog** (`lib/discoveryWatchdog.js`): restarts the `dnssd2` browser whenever no AirPlay devices are known (checks every 60s, exponential backoff to 15 min while empty). Needed because on a cold boot the service can start before Wi-Fi associates, and discovery started without an address never recovers by itself. `babelpod.service` also waits up to 60s for an IPv4 address in `ExecStartPre` — `network-online.target` alone is reached before Wi-Fi is up on the Pi. Unit file changes need `sudo cp babelpod.service /etc/systemd/system/ && sudo systemctl daemon-reload` on the Pi, not just a `git pull`.
 - **PCM:** Reads `/proc/asound/pcm` every 10 seconds
 - **Bluetooth:** Optional `bluetoothctl` module, discovers paired devices
 - **Self-advertisement:** Advertises as `_babelpod._tcp` for client discovery

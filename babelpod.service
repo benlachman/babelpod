@@ -25,6 +25,12 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 # Use debug while tuning autoconnect thresholds; dial back to info for steady state
 Environment=LOG_LEVEL=debug
 
+# network-online.target is reached before Wi-Fi associates (NetworkManager's
+# wait-online returns in ~1s here), and mDNS discovery started without an
+# address never recovers on its own. Wait up to 60s for a global IPv4 address,
+# then start regardless (the in-app discovery watchdog covers the rest).
+ExecStartPre=/bin/sh -c 'i=0; while [ $$i -lt 60 ]; do ip -4 -o addr show scope global | grep -q . && exit 0; i=$$((i+1)); sleep 1; done; echo "babelpod: no IPv4 address after 60s, starting anyway"; exit 0'
+
 # Start the Node 20 binary directly
 ExecStart=/usr/bin/node --max-old-space-size=128 /home/pi/babelpod/index.js
 

@@ -19,6 +19,7 @@ const dnssd = require('dnssd2');
 const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
+const { DiscoveryWatchdog } = require('./lib/discoveryWatchdog');
 const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
@@ -807,6 +808,8 @@ function buildStatePayload() {
   if (plugIsConfigured()) {
     state.turntablePower = buildTurntablePowerPayload();
   }
+  // Present only when this host can be rebooted from a client
+  if (rebootCommand) state.canRebootHost = true;
   return state;
 }
 
@@ -975,22 +978,41 @@ browser.on('error', (error) => {
 // Start the browser
 browser.start();
 
+let browserRestarting = false;
+function restartAirplayDiscovery(reason) {
+  log.info(`[mdns] Restarting discovery (${reason})`);
+  browserRestarting = true;
+  try {
+    browser.stop();
+  } catch (e) {
+    console.error("Error stopping mDNS browser:", e);
+  }
+  setTimeout(() => {
+    try {
+      browser.start();
+    } catch (e) {
+      console.error("Error starting mDNS browser:", e);
+    }
+    browserRestarting = false;
+  }, 1000);
+}
+
 // Cold-boot mDNS race: TXT records (including gpn for stereo pairs) may not
 // be resolved on initial serviceUp when the network is still warming up.
 // One-time restart after initial discovery settles to re-resolve with warm network.
-let browserRestarting = false;
 setTimeout(() => {
   const hasMissingPairData = availableAirplayOutputs.some(d => d.stereo === null);
-  if (hasMissingPairData) {
-    log.info('[mdns] Restarting discovery to refresh TXT records (stereo pair data missing)');
-    browserRestarting = true;
-    browser.stop();
-    setTimeout(() => {
-      browser.start();
-      browserRestarting = false;
-    }, 1000);
-  }
+  if (hasMissingPairData) restartAirplayDiscovery('refresh TXT records, stereo pair data missing');
 }, 10000);
+
+// Discovery that finds nothing at all (browser started before the network was
+// usable, or died later) is restarted by the watchdog until devices appear.
+const discoveryWatchdog = new DiscoveryWatchdog({
+  getDeviceCount: () => availableAirplayOutputs.length,
+  restartDiscovery: restartAirplayDiscovery,
+  log
+});
+discoveryWatchdog.start();
 
 // ============ Advertise BabelPod service
 let advertise = null;
@@ -1166,6 +1188,33 @@ app.get('/', (req, res) => {
 // =======================
 // 11) Socket.IO events
 // =======================
+// Host reboot, requested from a client's settings (owner only). Enabled on
+// Linux, where the Pi's service user has passwordless sudo, or wherever
+// BABEL_REBOOT_COMMAND is set (tests point it at a harmless command).
+const rebootCommand = process.env.BABEL_REBOOT_COMMAND
+  || (process.platform === 'linux' ? 'sudo -n systemctl reboot' : null);
+let rebootInProgress = false;
+
+function rebootHost() {
+  if (!rebootCommand || rebootInProgress) return;
+  rebootInProgress = true;
+  console.log("Rebooting host on client request");
+  io.emit('status', { message: `Restarting ${config.displayName}…` });
+  // Release AirPlay receivers first so they aren't left holding a dead session
+  syncOutputs([]);
+  io.emit('output', { ids: [] });
+  setTimeout(() => {
+    const child = spawn('/bin/sh', ['-c', rebootCommand], { stdio: 'ignore' });
+    const fail = reason => {
+      rebootInProgress = false;
+      console.error(`Reboot failed: ${reason}`);
+      io.emit('serverError', { message: `Restart failed: ${reason}` });
+    };
+    child.on('error', error => fail(error.message));
+    child.on('exit', code => { if (code !== 0) fail(`reboot command exited with code ${code}`); });
+  }, 1000);
+}
+
 let sessionOwner = null;
 
 io.on('connection', socket => {
@@ -1349,6 +1398,11 @@ io.on('connection', socket => {
     }
 
     io.emit('status', { message: 'Settings saved' });
+  });
+
+  socket.on('rebootHost', () => {
+    if (socket.id !== sessionOwner) return;
+    rebootHost();
   });
 
   socket.on('setTurntablePower', (data) => {
