@@ -16,7 +16,7 @@
   "dependencies": {
     "@matter/main": "^0.17.2",
     "@project-chip/matter.js": "^0.17.2",
-    "airtunes2": "https://github.com/benlachman/node_airtunes2/releases/download/v2.4.9-babelpod.4/airtunes2-2.4.9-babelpod.4.tgz",
+    "airtunes2": "https://github.com/benlachman/node_airtunes2/releases/download/v2.4.9-babelpod.5/airtunes2-2.4.9-babelpod.5.tgz",
     "bluetoothctl": "https://github.com/DerDaku/node-bluetoothctl.git",
     "dnssd2": "^1.0.0",
     "express": "^4.17.1",
