@@ -20,10 +20,10 @@ const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
 const { DiscoveryWatchdog } = require('./lib/discoveryWatchdog');
-const { retryWithBackoff } = require('./lib/retry');
 const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
+const { retryWithBackoff } = require('./lib/retry');
 
 // =======================
 // 1a) Log level
