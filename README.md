@@ -50,7 +50,7 @@ npm install
 
 ### _Note: Potential Node-Gyp Issues_
 
-airtunes2 includes a native addon prebuilt for 64-bit Raspberry Pi OS with Node 20. Elsewhere it is compiled during `npm install`. If you have trouble building it, ensure:
+airtunes2 includes a native addon prebuilt for linux-arm64 with Node 20 (such as 64-bit Raspberry Pi OS). Elsewhere it is compiled during `npm install`. If you have trouble building it, ensure:
 
 - You have a proper C++ build environment (e.g., build-essential on Debian/Ubuntu or Xcode Command Line Tools on macOS).
 - Node.js version is not too new to break older C++ code. If you get errors like “C++20 or later required,” you can consider installing an LTS version of Node (e.g., 18 or 20).
