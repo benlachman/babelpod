@@ -20,6 +20,7 @@ const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
 const { DiscoveryWatchdog } = require('./lib/discoveryWatchdog');
+const { retryWithBackoff } = require('./lib/retry');
 const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
@@ -474,14 +475,22 @@ function updateAutoOffArming() {
   });
   const armed = plugIsConfigured() && config.autoOffEnabled &&
     currentInput !== 'void' && plugController.isOn;
+  if (armed !== silenceAutoOff.armed) log.info(`[auto-off] ${armed ? 'armed' : 'disarmed'}`);
   silenceAutoOff.setArmed(armed);
 }
 
-function handleAutoOffTrigger() {
+// Returns whether the plug really went off; false makes the detector try again
+// after another full window of silence.
+async function handleAutoOffTrigger() {
   const minutes = config.autoOffSilenceMinutes || 20;
   log.info(`[auto-off] ${minutes} min of silence — powering turntable off`);
+  const commandSucceeded = await applyTurntablePower(false);
+  if (!commandSucceeded || plugController?.isOn) {
+    log.warn('[auto-off] turntable is still on — will try again');
+    return false;
+  }
   io.emit('status', { message: `Turntable powered off after ${minutes} min of silence` });
-  applyTurntablePower(false);
+  return true;
 }
 
 // Shared control core for turntable power. Socket.IO handlers gate on session
@@ -490,21 +499,26 @@ function handleAutoOffTrigger() {
 // touching session ownership. The resulting `turntablePower` broadcast comes
 // from the OnOff subscription, never synthesized from the command, so clients
 // always see the real hardware state (self-correcting on failed commands).
-function applyTurntablePower(on) {
+// Resolves to whether the command succeeded; never rejects.
+async function applyTurntablePower(on) {
   if (!plugIsConfigured()) {
     io.emit('serverError', { message: 'No turntable plug configured' });
-    return;
+    return false;
   }
   if (!plugController.isReachable) {
     io.emit('serverError', { message: 'Turntable plug is unreachable' });
     broadcastTurntablePower();
-    return;
+    return false;
   }
-  plugController.setPower(on).catch(e => {
+  try {
+    await plugController.setPower(on);
+    return true;
+  } catch (e) {
     console.error("Error setting turntable plug power:", e);
     io.emit('serverError', { message: `Turntable plug error: ${e.message}` });
     broadcastTurntablePower();
-  });
+    return false;
+  }
 }
 
 // Build (lazily) the plug controller and wire its hardware-state change events.
@@ -515,7 +529,6 @@ function createPlugController() {
   });
   controller.on('change', ({ on, reachable }) => {
     log.info(`[plug] state changed: on=${on} reachable=${reachable}`);
-    if (on) silenceAutoOff.reset(); // power restored — start a fresh silence window
     updateAutoOffArming();
     broadcastTurntablePower();
   });
@@ -547,16 +560,24 @@ async function commissionTurntablePlug(pairingCode) {
 async function startTurntablePlug() {
   if (!config.turntablePlugEnabled) return; // no plug → matter.js never loads
 
-  plugController = createPlugController();
   try {
-    const alreadyCommissioned = await plugController.init();
-    if (alreadyCommissioned) {
-      await plugController.connect();
-    } else if (config.turntablePlugPairingCode) {
+    const alreadyCommissioned = await retryWithBackoff(async () => {
+      plugController ??= createPlugController();
+      const commissioned = await plugController.init();
+      if (commissioned) await plugController.connect();
+      return commissioned;
+    }, {
+      onFailure: (error, delayMs) => {
+        log.error(`[plug] connection failed, retrying in ${delayMs / 1000}s: ${error.message}`);
+        io.emit('serverError', { message: `Turntable plug connection failed: ${error.message}` });
+      }
+    });
+    if (!alreadyCommissioned) {
+      if (!config.turntablePlugPairingCode) {
+        log.warn('[plug] enabled but not commissioned and no pairing code — awaiting in-app setup');
+        return;
+      }
       await plugController.commission(config.turntablePlugPairingCode);
-    } else {
-      log.warn('[plug] enabled but not commissioned and no pairing code — awaiting in-app setup');
-      return;
     }
     log.info(`[plug] connected: on=${plugController.isOn} reachable=${plugController.isReachable}`);
     updateAutoOffArming();

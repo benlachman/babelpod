@@ -319,7 +319,8 @@ Each output can carry its own volume independent of the master. The contract is 
 The turntable can be plugged into a HomeKit-enabled **Matter** smart plug. BabelPod commissions the plug onto its own Matter fabric (multi-admin — it stays paired with Apple Home) and:
 
 - Exposes the plug over the API: `setTurntablePower` / `turntablePower` and `state.turntablePower`.
-- Subscribes to the plug's OnOff attribute, so changes made from Apple Home or the physical button are broadcast to all clients.
+- Subscribes to the plug's OnOff attribute, so changes made from Apple Home or the physical button are broadcast to all clients. It also reads the state from the plug on every connection, after each command, and every 5 minutes, so a missed report cannot leave auto-off disarmed.
+- Retries with backoff if connecting at startup fails, and repeats auto-off after another full window if the power could not be cut.
 - Optionally powers the plug **off** after sustained input silence (a record left spinning in the runout groove). The silence detector taps the same RMS pipeline as autoconnect, converts to dBFS (with ~1s smoothing), and fires only after `autoOffSilenceMinutes` of continuous signal in the dead band between `autoOffNoiseFloorDb` and `autoOffSilenceThresholdDb` — the signature of a powered turntable with nothing playing. Louder audio (music) resets the window, so inter-track gaps and quiet passages never trigger; so does a level **below the noise floor**, which means the turntable itself is already off and cutting the outlet would only be an annoyance. After firing it disarms until power returns.
 
 ### Setup
