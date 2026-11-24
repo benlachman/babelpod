@@ -11,6 +11,10 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/.claude/"
+    ],
     "forceExit": true
   },
   "dependencies": {
@@ -19,16 +23,32 @@
     "airtunes2": "https://github.com/benlachman/node_airtunes2/releases/download/v2.4.9-babelpod.5/airtunes2-2.4.9-babelpod.5.tgz",
     "bluetoothctl": "https://github.com/DerDaku/node-bluetoothctl.git",
     "dnssd2": "^1.0.0",
-    "express": "^4.17.1",
+    "express": "^4.22.3",
     "mdns-js": "^1.0.3",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/user-event": "^14.6.1",
-    "jest": "^30.2.0",
-    "jest-environment-jsdom": "^30.2.0",
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2",
     "jsdom": "^27.0.1",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.4"
+  },
+  "overrides": {
+    "bn.js": "^4.12.3",
+    "body-parser": "^1.20.9",
+    "engine.io": "^6.6.10",
+    "glob": "^14.0.2",
+    "lodash": "^4.18.1",
+    "mdns-js": {
+      "semver": "^7.8.5"
+    },
+    "minimatch": "^11.0.1",
+    "proxy-addr": "^2.0.8",
+    "qs": "^6.16.1",
+    "socket.io-adapter": "^2.5.8",
+    "socket.io-parser": "^4.2.7",
+    "ws": "^8.21.0"
   }
 }
