@@ -3,7 +3,7 @@
  * These tests don't require hardware and test pure logic functions
  */
 
-const { parsePcmDevices, parseAirplayService, airplayTxtRecords, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('../lib/devices');
+const { parsePcmDevices, parseAirplayService, airplayTxtRecords, airplaySupportsTransientPairing, buildUnifiedOutputs, outputNameForDevice, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('../lib/devices');
 
 describe('BabelPod Utility Functions', () => {
   describe('parsePcmDevices', () => {
@@ -107,6 +107,23 @@ describe('BabelPod Utility Functions', () => {
         isStereo: true
       });
       expect(unified[0].devices).toHaveLength(2);
+    });
+  });
+
+  describe('outputNameForDevice', () => {
+    const outputs = buildUnifiedOutputs([{ id: 'plughw:0,0', name: 'Headphones' }], [
+      { name: 'Kitchen', stereo: null, host: '192.168.1.10', port: 7000 },
+      { name: 'Living Room', stereo: 'Living Room', host: '192.168.1.11', port: 7000 },
+      { name: 'Living Room (2)', stereo: 'Living Room', host: '192.168.1.12', port: 7000 }
+    ]);
+
+    test('should name the output a receiver belongs to', () => {
+      expect(outputNameForDevice(outputs, '192.168.1.10:7000')).toBe('Kitchen - AirPlay');
+      expect(outputNameForDevice(outputs, '192.168.1.12:7000')).toBe('Living Room - AirPlay Stereo');
+    });
+
+    test('should fall back to the key for an unknown receiver', () => {
+      expect(outputNameForDevice(outputs, '192.168.1.99:7000')).toBe('192.168.1.99:7000');
     });
   });
 
