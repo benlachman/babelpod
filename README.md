@@ -50,7 +50,7 @@ npm install
 
 ### _Note: Potential Node-Gyp Issues_
 
-If you have trouble building airtunes2, ensure:
+airtunes2 includes a native addon prebuilt for linux-arm64 with Node 20 (such as 64-bit Raspberry Pi OS). Elsewhere it is compiled during `npm install`. If you have trouble building it, ensure:
 
 - You have a proper C++ build environment (e.g., build-essential on Debian/Ubuntu or Xcode Command Line Tools on macOS).
 - Node.js version is not too new to break older C++ code. If you get errors like “C++20 or later required,” you can consider installing an LTS version of Node (e.g., 18 or 20).
@@ -136,13 +136,7 @@ Once paired and trusted, the Bluetooth device will appear in BabelPod's input de
 
 - You should hear your recording on local playback. This ensures your input device is working.
 
-2. **Confirm single AirPlay device with node_airtunes2**
-
-`cat test.wav | npx airtunes2 --host <AirPlay device IP> --port 7000`
-
-- If you hear playback on that AirPlay device, the streaming chain works.
-
-3. **BabelPod**
+2. **BabelPod**
 
 - Start the server: `node index.js`
 - Go to the UI, pick the same input device used above, select your AirPlay or local device. You should hear real-time audio.
