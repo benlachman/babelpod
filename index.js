@@ -20,7 +20,7 @@ const AirTunes = require('airtunes2');
 const { hostname } = require('os');
 const path = require('path');
 const { DiscoveryWatchdog } = require('./lib/discoveryWatchdog');
-const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
+const { parsePcmDevices, parseAirplayService, airplaySupportsTransientPairing, buildUnifiedOutputs, outputNameForDevice, clampVolume, outputSupportsVolume, averageVolume, applyGroupVolume, sanitizeDefaultOutputVolumes } = require('./lib/devices');
 const { SilenceAutoOff } = require('./lib/turntable');
 const { MatterPlugController } = require('./lib/plugController');
 
@@ -142,6 +142,18 @@ const io = new Server(server);
 const airtunes = new AirTunes();
 let activeLocalOutputs = [];
 let activeAirPlayDevices = []; // Track active AirPlay devices for volume control
+airtunes.on('device', (deviceKey, status) => {
+  if (status !== 'stopped') return;
+  // Deselecting a speaker stops it too, and takes it off the active list in the
+  // same turn. One still listed after that dropped on its own.
+  setImmediate(() => {
+    if (!activeAirPlayDevices.includes(deviceKey)) return;
+    activeAirPlayDevices = activeAirPlayDevices.filter(key => key !== deviceKey);
+    const name = outputNameForDevice(unifiedOutputs, deviceKey);
+    log.warn(`AirPlay receiver dropped: ${name} (${deviceKey})`);
+    io.emit('serverError', { message: `${name} disconnected. Deselect and reselect it to reconnect.` });
+  });
+});
 
 // =======================
 // 4) Fallback sink setup
