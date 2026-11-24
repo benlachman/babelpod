@@ -331,3 +331,164 @@ describe('MatterPlugController OnOff cluster discovery', () => {
     expect(calls).toEqual(['on', 'off']);
   });
 });
+
+describe('MatterPlugController hardware state sync', () => {
+  function createObservable() {
+    const listeners = new Set();
+    return { on: fn => listeners.add(fn), off: fn => listeners.delete(fn), emit: value => listeners.forEach(fn => fn(value)), count: () => listeners.size };
+  }
+
+  // matter.js keeps a stored copy (`stored`) that can disagree with the plug
+  // (`actual`), and does not emit attributeChanged for the initial sync.
+  function createPlug({ stored, actual, connected = true }) {
+    const plug = { stored, actual, reads: [], readError: null, sent: [] };
+    const client = {
+      getOnOffAttribute: async requestFromRemote => {
+        plug.reads.push(requestFromRemote === true ? 'remote' : 'local');
+        if (requestFromRemote !== true) return plug.stored;
+        if (plug.readError) throw plug.readError;
+        return plug.actual;
+      },
+      on: async () => { plug.sent.push('on'); plug.actual = true; },
+      off: async () => { plug.sent.push('off'); plug.actual = false; }
+    };
+    plug.client = client;
+    plug.node = {
+      isConnected: connected,
+      initialized: true,
+      connect() {},
+      getDevices: () => [{ getClusterClient: () => client }],
+      events: { attributeChanged: createObservable(), stateChanged: createObservable(), structureChanged: createObservable() }
+    };
+    const controller = new MatterPlugController({ storagePath: '/tmp/unused', log: { info() {}, warn: jest.fn() } });
+    controller.OnOffCluster = { id: 6 };
+    controller.matter = { NodeStates: { Connected: 0, Disconnected: 1 } };
+    controller.controller = { getCommissionedNodes: () => [1], getNode: async () => plug.node, close: async () => {} };
+    plug.controller = controller;
+    return plug;
+  }
+
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+
+  test('stored state says off but the plug is on: corrected on connect (hard reset)', async () => {
+    const plug = createPlug({ stored: false, actual: true });
+    await plug.controller.connect();
+    expect(plug.controller.isOn).toBe(true);
+    expect(plug.reads).toContain('remote');
+    await plug.controller.stop();
+  });
+
+  test('plug connects after startup: corrected when it becomes reachable', async () => {
+    const plug = createPlug({ stored: false, actual: true, connected: false });
+    await plug.controller.connect();
+    expect(plug.controller.isOn).toBe(false);
+    plug.node.isConnected = true;
+    plug.node.events.stateChanged.emit(0);
+    await settle();
+    expect(plug.controller.isOn).toBe(true);
+    expect(plug.controller.isReachable).toBe(true);
+    await plug.controller.stop();
+  });
+
+  test('a missed change is picked up by the periodic read', async () => {
+    jest.useFakeTimers();
+    try {
+      const plug = createPlug({ stored: false, actual: false });
+      await plug.controller.connect();
+      plug.actual = true;
+      await jest.advanceTimersByTimeAsync(5 * 60000);
+      expect(plug.controller.isOn).toBe(true);
+      await plug.controller.stop();
+      const readCount = plug.reads.length;
+      await jest.advanceTimersByTimeAsync(30 * 60000);
+      expect(plug.reads.length).toBe(readCount);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('setPower reads back the result even when no event arrives', async () => {
+    const plug = createPlug({ stored: true, actual: true });
+    await plug.controller.connect();
+    await plug.controller.setPower(false);
+    expect(plug.sent).toEqual(['off']);
+    expect(plug.controller.isOn).toBe(false);
+    await plug.controller.stop();
+  });
+
+  test('a report arriving during a read wins over the read', async () => {
+    const plug = createPlug({ stored: true, actual: true });
+    await plug.controller.connect();
+    let finishRead;
+    plug.client.getOnOffAttribute = () => new Promise(resolve => { finishRead = resolve; });
+    const refresh = plug.controller.refreshState();
+    plug.node.events.attributeChanged.emit({ path: { clusterId: 6, attributeName: 'onOff' }, value: false });
+    finishRead(true);
+    await refresh;
+    expect(plug.controller.isOn).toBe(false);
+    await plug.controller.stop();
+  });
+
+  test('a failed or hung read keeps the last state and does not block later reads', async () => {
+    const plug = createPlug({ stored: true, actual: true });
+    await plug.controller.connect();
+    plug.readError = new Error('offline');
+    await plug.controller.refreshState();
+    expect(plug.controller.isOn).toBe(true);
+
+    jest.useFakeTimers();
+    try {
+      const working = plug.client.getOnOffAttribute;
+      plug.client.getOnOffAttribute = () => new Promise(() => {});
+      const hung = plug.controller.refreshState();
+      await jest.advanceTimersByTimeAsync(30000);
+      await hung;
+      plug.client.getOnOffAttribute = working;
+    } finally {
+      jest.useRealTimers();
+    }
+    plug.readError = null;
+    plug.actual = false;
+    await plug.controller.refreshState();
+    expect(plug.controller.isOn).toBe(false);
+    await plug.controller.stop();
+  });
+
+  test('reconnecting the same node does not register its listeners twice', async () => {
+    const plug = createPlug({ stored: true, actual: true });
+    await plug.controller.connect();
+    await plug.controller.connect();
+    expect(plug.node.events.attributeChanged.count()).toBe(1);
+    await plug.controller.stop();
+  });
+});
+
+describe('SilenceAutoOff retries a failed power-off', () => {
+  const runoutRms = 0.0028; // about -51 dBFS
+
+  async function countTriggers(onTrigger) {
+    let time = 0;
+    let triggers = 0;
+    const detector = new SilenceAutoOff({ durationMs: 1000, now: () => time, onTrigger: () => { triggers++; return onTrigger(); } });
+    detector.setArmed(true);
+    for (time = 0; time <= 3500; time += 100) {
+      detector.handleRms(runoutRms);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    return triggers;
+  }
+
+  test('tries again after another window when the trigger reports failure', async () => {
+    expect(await countTriggers(async () => false)).toBeGreaterThan(1);
+  });
+
+  test('tries again when the trigger throws', async () => {
+    expect(await countTriggers(async () => { throw new Error('unreachable'); })).toBeGreaterThan(1);
+  });
+
+  test('fires once when the power-off succeeds', async () => {
+    expect(await countTriggers(async () => true)).toBe(1);
+  });
+});
